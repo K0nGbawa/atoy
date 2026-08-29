@@ -377,10 +377,7 @@ impl Compiler {
     }
     pub fn compile_program(stmts: &Vec<Stmt>) -> Vec<OpCode> {
         let mut compiler = Self::new();
-        for stmt in stmts {
-            compiler.compile_stmt(stmt);
-        }
-        compiler.code
+        compiler.compile(stmts)
     }
 
     pub fn compile(&mut self, stmts: &Vec<Stmt>) -> Vec<OpCode> {
