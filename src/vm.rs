@@ -122,7 +122,7 @@ mod vm_test {
         let tokens = lexer.tokenize()?;
         let mut parser = Parser::new(tokens);
         let expr = parser.parse()?;
-        let opcodes = Compiler::compile(&expr);
+        let opcodes = Compiler::compile_program(&expr);
         let mut vm = VM::new(opcodes);
         let res = vm.run();
         println!("{:#?}", res);

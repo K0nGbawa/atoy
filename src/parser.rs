@@ -517,7 +517,7 @@ mod parser_test {
         let tokens = lexer.tokenize()?;
         let mut parser = Parser::new(tokens);
         let stmts = parser.parse()?;
-        let opcodes = Compiler::compile(&stmts);
+        let opcodes = Compiler::compile_program(&stmts);
         println!("{:#?}", opcodes);
         Ok(())
     }
