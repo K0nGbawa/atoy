@@ -195,9 +195,9 @@ impl Parser {
                 let res = match &left {
                     Expr::Ident(name) => match self.peek() {
                         Token::Assign => self.parse_assign_stmt(name.clone())?,
-                        _ => Stmt::Expr(left)
+                        _ => Stmt::Expr(left),
                     },
-                    _ => Stmt::Expr(left)
+                    _ => Stmt::Expr(left),
                 };
                 self.expect(Token::Semicolon)?;
                 Ok(res)
@@ -375,128 +375,110 @@ impl Compiler {
             symbol_table: std::collections::HashMap::new(),
         }
     }
-    pub fn compile(stmts: &Vec<Stmt>) -> Vec<OpCode> {
+    pub fn compile_program(stmts: &Vec<Stmt>) -> Vec<OpCode> {
         let mut compiler = Self::new();
         for stmt in stmts {
-            Self::compile_stmt(stmt, &mut compiler.code, &mut compiler.symbol_table);
+            compiler.compile_stmt(stmt);
         }
         compiler.code
     }
 
-    pub fn compile_stmt(
-        stmt: &Stmt,
-        code: &mut Vec<OpCode>,
-        symbol_table: &mut HashMap<String, usize>,
-    ) {
+    pub fn compile(&mut self, stmts: &Vec<Stmt>) -> Vec<OpCode> {
+        for stmt in stmts {
+            self.compile_stmt(stmt);
+        }
+        self.code.clone()
+    }
+    pub fn compile_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Expr(expr) => Self::compile_expr(expr, code, symbol_table),
-            Stmt::Let { name, value } => Self::compile_let_expr(name, value, code, symbol_table),
+            Stmt::Expr(expr) => self.compile_expr(expr),
+            Stmt::Let { name, value } => self.compile_let_expr(name, value),
             Stmt::IfElse {
                 condition,
                 then_branch,
                 else_branch,
-            } => Self::compile_if_expr(condition, then_branch, else_branch, code, symbol_table),
-            Stmt::While { condition, stmts } => {
-                Self::compile_while_expr(condition, stmts, code, symbol_table)
-            }
-            Stmt::Assign { name, value } => {
-                Self::compile_assign_expr(name, value, code, symbol_table)
-            }
+            } => self.compile_if_expr(condition, then_branch, else_branch),
+            Stmt::While { condition, stmts } => self.compile_while_expr(condition, stmts),
+            Stmt::Assign { name, value } => self.compile_assign_expr(name, value),
         }
     }
 
-    fn compile_assign_expr(
-        name: &String,
-        value: &Expr,
-        code: &mut Vec<OpCode>,
-        symbol_table: &mut HashMap<String, usize>,
-    ) {
-        Self::compile_expr(value, code, symbol_table);
-        let index = if let Some(&idx) = symbol_table.get(name) {
+    fn compile_assign_expr(&mut self, name: &String, value: &Expr) {
+        self.compile_expr(value);
+        let index = if let Some(&idx) = self.symbol_table.get(name) {
             idx
         } else {
             panic!("变量 {name} 未定义");
         };
-        code.push(OpCode::StoreGlobal(index));
+        self.code.push(OpCode::StoreGlobal(index));
     }
 
-    fn compile_while_expr(
-        condition: &Expr,
-        stmts: &Vec<Stmt>,
-        code: &mut Vec<OpCode>,
-        symbol_table: &mut HashMap<String, usize>,
-    ) {
-        let start_idx = code.len();
-        Self::compile_expr(condition, code, symbol_table);
-        let jmp_idx = code.len();
-        code.push(OpCode::JmpIfNot(usize::MAX));
+    fn compile_while_expr(&mut self, condition: &Expr, stmts: &Vec<Stmt>) {
+        let start_idx = self.code.len();
+        self.compile_expr(condition);
+        let jmp_idx = self.code.len();
+        self.code.push(OpCode::JmpIfNot(usize::MAX));
         for stmt in stmts {
-            Self::compile_stmt(stmt, code, symbol_table);
+            self.compile_stmt(stmt);
         }
-        code.push(OpCode::Jmp(start_idx));
-        code[jmp_idx] = OpCode::JmpIfNot(code.len());
+        self.code.push(OpCode::Jmp(start_idx));
+        self.code[jmp_idx] = OpCode::JmpIfNot(self.code.len());
     }
 
     fn compile_if_expr(
+        &mut self,
         condition: &Expr,
         then_branch: &Vec<Stmt>,
         else_branch: &Option<Vec<Stmt>>,
-        code: &mut Vec<OpCode>,
-        symbol_table: &mut HashMap<String, usize>,
     ) {
-        Self::compile_expr(condition, code, symbol_table);
-        let jmp_idx = code.len();
-        code.push(OpCode::JmpIfNot(usize::MAX));
+        self.compile_expr(condition);
+        let jmp_idx = self.code.len();
+        self.code.push(OpCode::JmpIfNot(usize::MAX));
         for stmt in then_branch {
-            Self::compile_stmt(stmt, code, symbol_table);
+            self.compile_stmt(stmt);
         }
-        let leave_jmp_idx = code.len();
-        code.push(OpCode::Jmp(usize::MAX));
-        code[jmp_idx] = OpCode::JmpIfNot(code.len());
+        let leave_jmp_idx = self.code.len();
+        self.code.push(OpCode::Jmp(usize::MAX));
+        self.code[jmp_idx] = OpCode::JmpIfNot(self.code.len());
         if let Some(stmts) = else_branch {
             for stmt in stmts {
-                Self::compile_stmt(stmt, code, symbol_table);
+                self.compile_stmt(stmt);
             }
         }
-        code[leave_jmp_idx] = OpCode::Jmp(code.len());
+        self.code[leave_jmp_idx] = OpCode::Jmp(self.code.len());
     }
 
-    fn compile_let_expr(
-        name: &String,
-        value: &Expr,
-        code: &mut Vec<OpCode>,
-        symbol_table: &mut HashMap<String, usize>,
-    ) {
-        Self::compile_expr(value, code, symbol_table);
-        let index = if let Some(&idx) = symbol_table.get(name) {
+    fn compile_let_expr(&mut self, name: &String, value: &Expr) {
+        self.compile_expr(value);
+        let index = if let Some(&idx) = self.symbol_table.get(name) {
             idx
         } else {
-            let idx = symbol_table.len();
-            symbol_table.insert(name.clone(), idx);
+            let idx = self.symbol_table.len();
+            self.symbol_table.insert(name.clone(), idx);
             idx
         };
-        code.push(OpCode::StoreGlobal(index));
+        self.code.push(OpCode::StoreGlobal(index));
     }
 
-    fn compile_expr(expr: &Expr, code: &mut Vec<OpCode>, symbol_table: &HashMap<String, usize>) {
+    fn compile_expr(&mut self, expr: &Expr) {
         match expr {
-            Expr::Float(n) => code.push(OpCode::Push(Value::Float(*n))),
-            Expr::Integer(n) => code.push(OpCode::Push(Value::Integer(*n))),
-            Expr::Bool(b) => code.push(OpCode::Push(Value::Bool(*b))),
+            Expr::Float(n) => self.code.push(OpCode::Push(Value::Float(*n))),
+            Expr::Integer(n) => self.code.push(OpCode::Push(Value::Integer(*n))),
+            Expr::Bool(b) => self.code.push(OpCode::Push(Value::Bool(*b))),
             Expr::BinaryOp { left, op, right } => {
-                Self::compile_expr(left, code, symbol_table);
-                Self::compile_expr(right, code, symbol_table);
+                self.compile_expr(left);
+                self.compile_expr(right);
                 let opcode = match op {
                     BinOp::Add => OpCode::Add,
                     BinOp::Sub => OpCode::Sub,
                     BinOp::Mul => OpCode::Mul,
                     BinOp::Div => OpCode::Div,
                 };
-                code.push(opcode);
+                self.code.push(opcode);
             }
             Expr::CompareOp { left, op, right } => {
-                Self::compile_expr(left, code, symbol_table);
-                Self::compile_expr(right, code, symbol_table);
+                self.compile_expr(left);
+                self.compile_expr(right);
                 let opcode = match op {
                     CmpOp::Eq => OpCode::Eq,
                     CmpOp::Gt => OpCode::Gt,
@@ -505,14 +487,14 @@ impl Compiler {
                     CmpOp::Lte => OpCode::Lte,
                     CmpOp::NEq => OpCode::NEq,
                 };
-                code.push(opcode);
+                self.code.push(opcode);
             }
             Expr::Unary(expr) => {
-                Self::compile_expr(expr, code, symbol_table);
-                code.push(OpCode::Neg);
+                self.compile_expr(expr);
+                self.code.push(OpCode::Neg);
             }
-            Expr::Ident(name) => match symbol_table.get(name) {
-                Some(idx) => code.push(OpCode::LoadGlobal(*idx)),
+            Expr::Ident(name) => match self.symbol_table.get(name) {
+                Some(idx) => self.code.push(OpCode::LoadGlobal(*idx)),
                 None => panic!("变量 {} 未定义", name),
             },
         }
