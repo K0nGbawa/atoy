@@ -59,6 +59,7 @@ impl VM {
                     })
                 }
                 OpCode::Eq => self.binary_op(gen_cmpop_closure!(==)),
+                OpCode::NEq => self.binary_op(gen_cmpop_closure!(!=)),
                 OpCode::Gt => self.binary_op(gen_cmpop_closure!(>)),
                 OpCode::Lt => self.binary_op(gen_cmpop_closure!(<)),
                 OpCode::Gte => self.binary_op(gen_cmpop_closure!(>=)),
@@ -82,8 +83,16 @@ impl VM {
                             self.ip = *usize
                         }
                     }
+                },
+                OpCode::JmpIf(usize) => {
+                    let value = self.stack.pop().expect("Stack overflow");
+                    if let Value::Bool(value) = value {
+                        if value {
+                            self.ip = *usize
+                        }
+                    }
                 }
-                _ => todo!(),
+                _ => panic!("{op:?}"),
             }
         }
         // Value::None
@@ -108,14 +117,15 @@ mod vm_test {
         parser::{Compiler, Parser},
     };
     #[test]
-    fn compiler_test() {
-        let mut lexer = Lexer::new("if true { 2 + 0.2; } else { 1; }".to_owned());
-        let tokens = lexer.tokenize();
+    fn vm_test() -> Result<(), Box<dyn std::error::Error>> {
+        let mut lexer = Lexer::new("let a = 0; let b = 1; let tmp = 0; let count = 0; while count < 91 {tmp = b; b = a + b; a = tmp; count = count + 1; } a;".to_owned());
+        let tokens = lexer.tokenize()?;
         let mut parser = Parser::new(tokens);
-        let expr = parser.parse();
+        let expr = parser.parse()?;
         let opcodes = Compiler::compile(&expr);
         let mut vm = VM::new(opcodes);
         let res = vm.run();
-        println!("{:#?}", res)
+        println!("{:#?}", res);
+        Ok(())
     }
 }

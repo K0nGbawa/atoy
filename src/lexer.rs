@@ -1,3 +1,22 @@
+use thiserror::Error;
+
+#[derive(Debug)]
+pub struct Position {
+    pub line: usize,
+    pub col: usize,
+}
+
+#[derive(Debug, Error)]
+pub enum LexError {
+    #[error("multiple dots in number at line {line} col {col}", line = position.line, col = position.col)]
+    MultipleDots { position: Position },
+
+    #[error("unexpected character '{ch}' at line {line} col {col}", line = position.line, col = position.col)]
+    UnexpectedChar { ch: char, position: Position },
+}
+
+type LexResult<T> = Result<T, LexError>;
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Token {
     Integer(i64),
@@ -8,10 +27,12 @@ pub enum Token {
     Slash,
     Assign,
     Eq,
+    NEq,
     Gt,
     Lt,
     Gte,
     Lte,
+    Not,
     LParen,
     RParen,
     LBrace,
@@ -26,6 +47,43 @@ pub enum Token {
     False,
     If,
     Else,
+    Return,
+    While,
+}
+
+impl std::fmt::Display for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Integer(n) => write!(f, "{n}"),
+            Self::Float(n) => write!(f, "{n}"),
+            Self::Plus => write!(f, "+"),
+            Self::Minus => write!(f, "-"),
+            Self::Star => write!(f, "*"),
+            Self::Slash => write!(f, "/"),
+            Self::Assign => write!(f, "="),
+            Self::Eq => write!(f, "=="),
+            Self::NEq => write!(f, "!="),
+            Self::Gt => write!(f, ">"),
+            Self::Lt => write!(f, "<"),
+            Self::Gte => write!(f, ">="),
+            Self::Lte => write!(f, "<="),
+            Self::Not => write!(f, "!"),
+            Self::LParen => write!(f, "("),
+            Self::RParen => write!(f, ")"),
+            Self::LBrace => write!(f, "{{"),
+            Self::RBrace => write!(f, "}}"),
+            Self::Semicolon => write!(f, ";"),
+            Self::Ident(name) => write!(f, "{name}"),
+            Self::Eof => write!(f, "EOF"),
+            Self::Let => write!(f, "let"),
+            Self::True => write!(f, "true"),
+            Self::False => write!(f, "false"),
+            Self::If => write!(f, "if"),
+            Self::Else => write!(f, "else"),
+            Self::Return => write!(f, "return"),
+            Self::While => write!(f, "while"),
+        }
+    }
 }
 
 pub struct Lexer {
@@ -41,32 +99,70 @@ impl Lexer {
         }
     }
 
-    fn next_token(&mut self) -> Token {
+    fn get_position(&self) -> Position {
+        let mut line = 0;
+        let mut col = 0;
+        for &ch in &self.source[..self.position] {
+            if ch == '\n' {
+                col = 0;
+                line += 1;
+            } else if ch != '\r' {
+                col += 1;
+            }
+        }
+        Position { line, col }
+    }
+
+    fn next_token(&mut self) -> LexResult<Token> {
         while self.position < self.source.len() && self.source[self.position].is_whitespace() {
             self.position += 1;
         }
         if self.position >= self.source.len() {
-            return Token::Eof;
+            return Ok(Token::Eof);
         }
 
         let ch = self.source[self.position];
         self.position += 1;
         match ch {
-            '+' => Token::Plus,
-            '-' => Token::Minus,
-            '*' => Token::Star,
-            '/' => Token::Slash,
-            '(' => Token::LParen,
-            ')' => Token::RParen,
-            '{' => Token::LBrace,
-            '}' => Token::RBrace,
-            ';' => Token::Semicolon,
+            '+' => Ok(Token::Plus),
+            '-' => Ok(Token::Minus),
+            '*' => Ok(Token::Star),
+            '/' => Ok(Token::Slash),
+            '(' => Ok(Token::LParen),
+            ')' => Ok(Token::RParen),
+            '{' => Ok(Token::LBrace),
+            '}' => Ok(Token::RBrace),
+            ';' => Ok(Token::Semicolon),
             '=' => {
                 if self.position < self.source.len() && self.source[self.position] == '=' {
                     self.position += 1;
-                    Token::Eq
+                    Ok(Token::Eq)
                 } else {
-                    Token::Assign
+                    Ok(Token::Assign)
+                }
+            }
+            '>' => {
+                if self.position < self.source.len() && self.source[self.position] == '=' {
+                    self.position += 1;
+                    Ok(Token::Gte)
+                } else {
+                    Ok(Token::Gt)
+                }
+            }
+            '<' => {
+                if self.position < self.source.len() && self.source[self.position] == '=' {
+                    self.position += 1;
+                    Ok(Token::Lte)
+                } else {
+                    Ok(Token::Lt)
+                }
+            }
+            '!' => {
+                if self.position < self.source.len() && self.source[self.position] == '=' {
+                    self.position += 1;
+                    Ok(Token::NEq)
+                } else {
+                    Ok(Token::Not)
                 }
             }
             '0'..='9' => {
@@ -80,7 +176,9 @@ impl Lexer {
                         self.position += 1;
                     } else if next_ch == '.' {
                         if is_float {
-                            panic!("Multiple dots in number")
+                            return Err(LexError::MultipleDots {
+                                position: self.get_position(),
+                            });
                         }
                         is_float = true;
                         num_str.push(next_ch);
@@ -90,9 +188,9 @@ impl Lexer {
                     }
                 }
                 if is_float {
-                    Token::Float(num_str.parse().unwrap())
+                    Ok(Token::Float(num_str.parse().unwrap()))
                 } else {
-                    Token::Integer(num_str.parse().unwrap())
+                    Ok(Token::Integer(num_str.parse().unwrap()))
                 }
             }
             'a'..='z' | 'A'..='Z' | '_' => {
@@ -109,27 +207,34 @@ impl Lexer {
                     }
                 }
                 match ident_name.as_str() {
-                    "let" => Token::Let,
-                    "true" => Token::True,
-                    "false" => Token::False,
-                    "if" => Token::If,
-                    "else" => Token::Else,
-                    _ => Token::Ident(ident_name),
+                    "let" => Ok(Token::Let),
+                    "true" => Ok(Token::True),
+                    "false" => Ok(Token::False),
+                    "if" => Ok(Token::If),
+                    "else" => Ok(Token::Else),
+                    "return" => Ok(Token::Return),
+                    "while" => Ok(Token::While),
+                    _ => Ok(Token::Ident(ident_name)),
                 }
             }
-            _ => panic!("Unexpected char: {}", ch),
+            _ => {
+                return Err(LexError::UnexpectedChar {
+                    ch,
+                    position: self.get_position(),
+                });
+            }
         }
     }
-    pub fn tokenize(&mut self) -> Vec<Token> {
+    pub fn tokenize(&mut self) -> LexResult<Vec<Token>> {
         let mut tokens = Vec::new();
         loop {
-            let token = self.next_token();
+            let token = self.next_token()?;
             tokens.push(token.clone());
             if token == Token::Eof {
                 break;
             }
         }
-        tokens
+        Ok(tokens)
     }
 }
 
@@ -138,9 +243,10 @@ mod lexer_test {
     use super::*;
 
     #[test]
-    fn lexer_test() {
-        let mut lexer = Lexer::new("if a == 2.0 {}".to_owned());
-        let tokens = lexer.tokenize();
+    fn lexer_test() -> LexResult<()> {
+        let mut lexer = Lexer::new("if a == 2.0 {}\n".to_owned());
+        let tokens = lexer.tokenize()?;
         println!("{:?}", tokens);
+        Ok(())
     }
 }
