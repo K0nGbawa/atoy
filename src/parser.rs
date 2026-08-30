@@ -40,6 +40,13 @@ pub enum CmpOp {
 }
 
 #[derive(Debug, Clone)]
+pub enum UnaryOp {
+    Not,
+    Neg,
+    Pos,
+}
+
+#[derive(Debug, Clone)]
 pub enum Stmt {
     Expr(Expr),
     Let {
@@ -84,7 +91,15 @@ pub enum Expr {
         op: CmpOp,
         right: Box<Expr>,
     },
-    Unary(Box<Expr>),
+    AndOp {
+        left: Box<Expr>,
+        right: Box<Expr>,
+    },
+    OrOp {
+        left: Box<Expr>,
+        right: Box<Expr>,
+    },
+    Unary(UnaryOp, Box<Expr>),
     Call(Box<Expr>, Vec<Expr>),
     Fn(Vec<String>, Box<Stmt>),
 }
@@ -115,6 +130,9 @@ pub enum OpCode {
     EnterScope,
     ExitScope,
     PushFn(usize, Vec<OpCode>),
+    Not,
+    And(usize),
+    Or(usize),
 }
 
 #[derive(Debug)]
@@ -168,6 +186,18 @@ impl std::fmt::Debug for Value {
             BuiltInFunc(func) => write!(f, "Value(BuiltinFunc({:p}))", *func),
             Func(func) => write!(f, "Value(Func({:p}))", *func),
             None => write!(f, "Value(None)"),
+        }
+    }
+}
+
+impl Value {
+    pub fn is_truthy(&self) -> bool {
+        match self {
+            Value::Integer(i) => *i != 0,
+            Value::Float(f) => *f != 0.0 && !f.is_nan(),
+            Value::Bool(bo) => *bo,
+            Value::BuiltInFunc(_) | Value::Func(_) => true,
+            Value::None => false,
         }
     }
 }
@@ -263,6 +293,15 @@ impl Parser {
 
     fn peek(&self) -> &Token {
         &self.tokens[self.position]
+    }
+
+    fn peek_unary_op(&self) -> Option<UnaryOp> {
+        match self.peek() {
+            Token::Not => Some(UnaryOp::Not),
+            Token::Minus => Some(UnaryOp::Neg),
+            Token::Plus => Some(UnaryOp::Pos),
+            _ => None,
+        }
     }
 
     fn peek_bin_op(&self) -> Option<BinOp> {
@@ -410,7 +449,7 @@ impl Parser {
         if self.peek().clone() == Token::Fn {
             self.parse_fn()
         } else {
-            self.parse_cmp_op()
+            self.parse_or_op()
         }
     }
 
@@ -433,6 +472,32 @@ impl Parser {
         let block = self.parse_block()?;
         self.in_func -= 1;
         Ok(Expr::Fn(args, Box::new(block)))
+    }
+
+    fn parse_or_op(&mut self) -> ParseResult<Expr> {
+        let mut left = self.parse_and_op()?;
+        while *self.peek() == Token::Or {
+            self.advance();
+            let right = self.parse_and_op()?;
+            left = Expr::OrOp {
+                left: Box::new(left),
+                right: Box::new(right),
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_and_op(&mut self) -> ParseResult<Expr> {
+        let mut left = self.parse_cmp_op()?;
+        while *self.peek() == Token::And {
+            self.advance();
+            let right = self.parse_cmp_op()?;
+            left = Expr::AndOp {
+                left: Box::new(left),
+                right: Box::new(right),
+            }
+        }
+        Ok(left)
     }
 
     fn parse_cmp_op(&mut self) -> ParseResult<Expr> {
@@ -489,17 +554,18 @@ impl Parser {
     }
 
     pub fn parse_unary(&mut self) -> ParseResult<Expr> {
-        match self.peek().clone() {
-            Token::Minus => {
+        let op = self.peek_unary_op();
+        match op {
+            Some(optype @ UnaryOp::Not | optype @ UnaryOp::Neg) => {
                 self.advance();
-                let expr = self.parse_call()?;
-                Ok(Expr::Unary(Box::new(expr)))
+                let expr = self.parse_unary()?;
+                Ok(Expr::Unary(optype, Box::new(expr)))
             }
-            Token::Plus => {
+            Some(UnaryOp::Pos) => {
                 self.advance();
-                self.parse_call()
+                self.parse_unary()
             }
-            _other => self.parse_call(),
+            None => self.parse_call(),
         }
     }
 
@@ -736,6 +802,24 @@ impl Compiler {
             Expr::Float(n) => self.push(OpCode::Push(Value::Float(*n))),
             Expr::Integer(n) => self.push(OpCode::Push(Value::Integer(*n))),
             Expr::Bool(b) => self.push(OpCode::Push(Value::Bool(*b))),
+            Expr::AndOp { left, right } => {
+                self.compile_expr(left);
+                let jmp_idx = self.context().len();
+                // And: 若为假不消耗栈顶并跳转到目标位置，为真消耗栈顶
+                self.push(OpCode::And(usize::MAX));
+                self.compile_expr(right);
+                let pos = self.context().len();
+                self.context()[jmp_idx] = OpCode::And(pos);
+            }
+            Expr::OrOp { left, right } => {
+                self.compile_expr(left);
+                let jmp_idx = self.context().len();
+                // Or: 若为真不消耗栈顶并跳转到目标位置，为假消耗栈顶
+                self.push(OpCode::Or(usize::MAX));
+                self.compile_expr(right);
+                let pos = self.context().len();
+                self.context()[jmp_idx] = OpCode::Or(pos);
+            }
             Expr::BinaryOp { left, op, right } => {
                 self.compile_expr(left);
                 self.compile_expr(right);
@@ -760,9 +844,13 @@ impl Compiler {
                 };
                 self.push(opcode);
             }
-            Expr::Unary(expr) => {
+            Expr::Unary(optype, expr) => {
                 self.compile_expr(expr);
-                self.push(OpCode::Neg);
+                match optype {
+                    UnaryOp::Neg => self.push(OpCode::Neg),
+                    UnaryOp::Not => self.push(OpCode::Not),
+                    UnaryOp::Pos => unreachable!(),
+                }
             }
             Expr::Ident(name) => {
                 for (lev, table) in self.symbol_tables.iter().enumerate().rev() {
