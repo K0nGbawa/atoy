@@ -73,6 +73,8 @@ pub enum Stmt {
         op: BinOp,
         value: Expr,
     },
+    Return(Expr),
+    Block(Vec<Stmt>),
 }
 
 #[derive(Debug, Clone)]
@@ -638,6 +640,7 @@ impl Compiler {
             Stmt::Return(expr) => {
                 self.compile_expr(expr);
                 self.push(OpCode::Ret);
+            }
             Stmt::CompoundAssign { name, op, value } => {
                 self.compile_compound_assign_expr(name, op, value)
             }
