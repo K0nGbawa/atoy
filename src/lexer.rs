@@ -117,10 +117,31 @@ impl Lexer {
         Position { line, col }
     }
 
-    fn next_token(&mut self) -> LexResult<Token> {
-        while self.position < self.source.len() && self.source[self.position].is_whitespace() {
-            self.position += 1;
+    fn skip_whitespace_and_comments(&mut self) {
+        loop {
+            while self.position < self.source.len() && self.source[self.position].is_whitespace() {
+                self.position += 1;
+            }
+
+            if self.position + 1 < self.source.len() {
+                let ch = self.source[self.position];
+                let next_ch = self.source[self.position + 1];
+                if ch == '/' && next_ch == '/' {
+                    while self.position < self.source.len()
+                        && !matches!(self.source[self.position], '\n')
+                    {
+                        self.position += 1;
+                    }
+                    continue;
+                }
+            }
+
+            break;
         }
+    }
+
+    fn next_token(&mut self) -> LexResult<Token> {
+        self.skip_whitespace_and_comments();
         if self.position >= self.source.len() {
             return Ok(Token::Eof);
         }
