@@ -1,9 +1,8 @@
 use std::{
     cell::RefCell,
     collections::HashMap,
-    fmt::{Display, write},
+    fmt::Display,
     matches,
-    ops::Index,
     println,
     rc::Rc,
     write,
