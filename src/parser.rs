@@ -1,12 +1,4 @@
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    fmt::Display,
-    matches,
-    println,
-    rc::Rc,
-    write,
-};
+use std::{cell::RefCell, collections::HashMap, fmt::Display, matches, println, rc::Rc, write};
 
 use thiserror::Error;
 
@@ -73,7 +65,7 @@ pub enum Stmt {
         value: Expr,
     },
     Block(Vec<Stmt>),
-    Return(Expr)
+    Return(Expr),
 }
 
 #[derive(Debug, Clone)]
@@ -324,10 +316,18 @@ impl Parser {
                 let res = match &left {
                     Expr::Ident(name) => match self.peek() {
                         Token::Assign => self.parse_assign_stmt(name.clone())?,
-                        Token::PlusAssign => self.parse_compound_assign_stmt(name.clone(), BinOp::Add)?,
-                        Token::MinusAssign => self.parse_compound_assign_stmt(name.clone(), BinOp::Sub)?,
-                        Token::StarAssign => self.parse_compound_assign_stmt(name.clone(), BinOp::Mul)?,
-                        Token::SlashAssign => self.parse_compound_assign_stmt(name.clone(), BinOp::Div)?,
+                        Token::PlusAssign => {
+                            self.parse_compound_assign_stmt(name.clone(), BinOp::Add)?
+                        }
+                        Token::MinusAssign => {
+                            self.parse_compound_assign_stmt(name.clone(), BinOp::Sub)?
+                        }
+                        Token::StarAssign => {
+                            self.parse_compound_assign_stmt(name.clone(), BinOp::Mul)?
+                        }
+                        Token::SlashAssign => {
+                            self.parse_compound_assign_stmt(name.clone(), BinOp::Div)?
+                        }
                         _ => Stmt::Expr(left),
                     },
                     _ => Stmt::Expr(left),
