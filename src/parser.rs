@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Display, rc::Rc};
 
 use thiserror::Error;
 
-use crate::lexer::Token;
+use crate::{lexer::Token, vm::Args};
 
 #[derive(Debug, Error)]
 pub enum ParseError {
@@ -75,13 +75,14 @@ pub enum Expr {
         right: Box<Expr>,
     },
     Unary(Box<Expr>),
+    Call(Box<Expr>, Vec<Expr>)
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum OpCode {
     Push(Value),
-    StoreGlobal(usize),
-    LoadGlobal(usize),
+    StoreGlobal(String),
+    LoadGlobal(String),
     Jmp(usize),
     JmpIfNot(usize),
     JmpIf(usize),
@@ -97,14 +98,71 @@ pub enum OpCode {
     NEq,
     Neg,
     Ret,
+    Call(usize)
 }
 
-#[derive(Debug, PartialEq, Clone)]
 pub enum Value {
     Float(f64),
     Integer(i64),
     Bool(bool),
+    BuiltInFunc(Rc<dyn Fn(Args) -> Value>),
     None,
+}
+
+impl std::fmt::Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use Value::*;
+        match self {
+            Float(n) => write!(f, "Value(Float({n}))"),
+            Integer(n) => write!(f, "Value(Integer({n}))"),
+            Bool(n) => write!(f, "Value(Bool({n}))"),
+            BuiltInFunc(func) => write!(f, "Value(BuiltinFunc({:p}))", *func),
+            None => write!(f, "Value(None)")
+        }
+    }
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        use Value::*;
+        match (self, other) {
+            (Float(n1), Float(n2)) => *n1 == *n2,
+            (Integer(n1), Integer(n2)) => *n1 == *n2,
+            (Bool(n1), Bool(n2)) => *n1 == *n2,
+            (BuiltInFunc(n1), BuiltInFunc(n2)) => Rc::ptr_eq(n1, n2),
+            (None, None) => true,
+            (_, _) => false
+        }
+    }
+    fn ne(&self, other: &Self) -> bool {
+        !self.eq(other)
+    }
+}
+
+impl Clone for Value {
+    fn clone(&self) -> Self {
+        use Value::*;
+        match self {
+            Float(n) => Float(*n),
+            Integer(n) => Integer(*n),
+            Bool(n) => Bool(*n),
+            BuiltInFunc(func) => BuiltInFunc(func.clone()),
+            None => None
+        }
+    }
+}
+
+impl Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use Value::*;
+        match self {
+            Float(n) => write!(f, "{n}"),
+            Integer(n) => write!(f, "{n}"),
+            Bool(n) => write!(f, "{n}"),
+            BuiltInFunc(func) => write!(f, "Builtin Function at {:p}", *func),
+            None => write!(f, "None")
+        }
+    }
 }
 
 pub struct Parser {
@@ -124,18 +182,6 @@ impl Parser {
         let token = self.tokens[self.position].clone();
         self.position += 1;
         token
-    }
-
-    fn expect_token(&mut self, expected: Token) -> ParseResult<Token> {
-        let tok = self.advance();
-        if std::mem::discriminant(&tok) == std::mem::discriminant(&expected) {
-            Ok(tok)
-        } else {
-            Err(ParseError::ExpectedToken(
-                expected.to_string(),
-                tok.to_string(),
-            ))
-        }
     }
 
     fn expect(&mut self, expected: Token) -> ParseResult<()> {
@@ -297,12 +343,12 @@ impl Parser {
     }
 
     fn parse_muldiv(&mut self) -> ParseResult<Expr> {
-        let mut left = self.parse_factor()?;
+        let mut left = self.parse_unary()?;
         while let Some(op) = self.peek_bin_op() {
             match op {
                 BinOp::Mul | BinOp::Div => {
                     self.advance();
-                    let right = self.parse_factor()?;
+                    let right = self.parse_unary()?;
                     left = Expr::BinaryOp {
                         left: Box::new(left),
                         op,
@@ -315,7 +361,45 @@ impl Parser {
         Ok(left)
     }
 
-    pub fn parse_factor(&mut self) -> ParseResult<Expr> {
+
+    pub fn parse_unary(&mut self) -> ParseResult<Expr> {
+        match self.peek().clone() {
+            Token::Minus => {
+                self.advance();
+                let expr = self.parse_call()?;
+                Ok(Expr::Unary(Box::new(expr)))
+            }
+            Token::Plus => {
+                self.advance();
+                self.parse_call()
+            }
+            _other => {
+                self.parse_call()
+            }
+        }
+    }
+    
+    pub fn parse_call(&mut self) -> ParseResult<Expr> {
+        let mut left = self.parse_atom()?;
+        if *self.peek() != Token::LParen {
+            Ok(left)
+        } else {
+            self.advance();
+            let mut args = Vec::new();
+            while *self.peek() != Token::RParen && *self.peek() != Token::Eof {
+                let arg = self.parse_cmp_op()?;
+                args.push(arg);
+                if *self.peek() == Token::Comma {
+                    self.advance();
+                }
+            }
+            self.expect(Token::RParen)?;
+            left = Expr::Call(Box::new(left), args);
+            Ok(left)
+        }
+    }
+
+    pub fn parse_atom(&mut self) -> ParseResult<Expr> {
         match self.peek().clone() {
             Token::Float(n) => {
                 self.advance();
@@ -330,15 +414,6 @@ impl Parser {
                 let expr = self.parse_cmp_op()?;
                 self.expect(Token::RParen)?;
                 Ok(expr)
-            }
-            Token::Minus => {
-                self.advance();
-                let expr = self.parse_factor()?;
-                Ok(Expr::Unary(Box::new(expr)))
-            }
-            Token::Plus => {
-                self.advance();
-                self.parse_factor()
             }
             Token::Ident(name) => {
                 self.advance();
@@ -402,12 +477,7 @@ impl Compiler {
 
     fn compile_assign_expr(&mut self, name: &String, value: &Expr) {
         self.compile_expr(value);
-        let index = if let Some(&idx) = self.symbol_table.get(name) {
-            idx
-        } else {
-            panic!("变量 {name} 未定义");
-        };
-        self.code.push(OpCode::StoreGlobal(index));
+        self.code.push(OpCode::StoreGlobal(name.clone()));
     }
 
     fn compile_while_expr(&mut self, condition: &Expr, stmts: &Vec<Stmt>) {
@@ -447,14 +517,7 @@ impl Compiler {
 
     fn compile_let_expr(&mut self, name: &String, value: &Expr) {
         self.compile_expr(value);
-        let index = if let Some(&idx) = self.symbol_table.get(name) {
-            idx
-        } else {
-            let idx = self.symbol_table.len();
-            self.symbol_table.insert(name.clone(), idx);
-            idx
-        };
-        self.code.push(OpCode::StoreGlobal(index));
+        self.code.push(OpCode::StoreGlobal(name.clone()));
     }
 
     fn compile_expr(&mut self, expr: &Expr) {
@@ -490,10 +553,14 @@ impl Compiler {
                 self.compile_expr(expr);
                 self.code.push(OpCode::Neg);
             }
-            Expr::Ident(name) => match self.symbol_table.get(name) {
-                Some(idx) => self.code.push(OpCode::LoadGlobal(*idx)),
-                None => panic!("变量 {} 未定义", name),
-            },
+            Expr::Ident(name) => self.code.push(OpCode::LoadGlobal(name.clone())),
+            Expr::Call(expr, args) => {
+                self.compile_expr(expr);
+                for arg in args {
+                    self.compile_expr(arg);
+                }
+                self.code.push(OpCode::Call(args.len()));
+            }
         }
     }
 }
