@@ -1,4 +1,4 @@
-use std::fmt::write;
+use std::{fmt::write, write};
 
 use thiserror::Error;
 
@@ -56,6 +56,7 @@ pub enum Token {
     Else,
     Return,
     While,
+    Fn,
 }
 
 impl std::fmt::Display for Token {
@@ -94,6 +95,7 @@ impl std::fmt::Display for Token {
             Self::Else => write!(f, "else"),
             Self::Return => write!(f, "return"),
             Self::While => write!(f, "while"),
+            Self::Fn => write!(f, "fn"),
         }
     }
 }
@@ -276,6 +278,7 @@ impl Lexer {
                     "else" => Ok(Token::Else),
                     "return" => Ok(Token::Return),
                     "while" => Ok(Token::While),
+                    "fn" => Ok(Token::Fn),
                     _ => Ok(Token::Ident(ident_name)),
                 }
             }

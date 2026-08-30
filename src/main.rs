@@ -5,6 +5,13 @@ use std::{fs::read_to_string, println};
 use std::{io, io::Write, print};
 
 fn repl() -> anyhow::Result<()> {
+    println!(
+        "Atoy v{} on {} {}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+    println!("Type exit() to exit the REPL.");
     let mut buffer = String::new();
     let opcodes = Vec::new();
     let mut vm = VM::new(opcodes);
@@ -27,25 +34,26 @@ fn repl() -> anyhow::Result<()> {
         if let Ok(tokens) = res {
             let mut parser = Parser::new(tokens);
             let parse_result = parser.parse();
+            println!("{:?}", parse_result);
             match parse_result {
                 Ok(tree) => {
                     let mut compiler = Compiler::new();
                     vm.replace_code(compiler.compile(&tree));
                     vm.peek_code();
-                    let res = vm.run();
+                    let res = vm.run(None);
                     match res {
                         None => {}
                         Some(val) => println!("{}", val),
                     }
                     buffer.clear()
                 }
-                Err(err) => match err {
+                Err(err) => match &err {
                     ParseError::UnexpectedEof => continue,
                     ParseError::ExpectedToken(_e, a) => {
                         if a == "EOF" {
                             continue;
                         } else {
-                            println!("Syntax Error: ");
+                            println!("Syntax Error: {}", err);
                             buffer.clear();
                             continue;
                         }
@@ -79,8 +87,9 @@ fn main() -> anyhow::Result<()> {
     let expr = parser.parse()?;
     let mut compiler = Compiler::new();
     let opcodes = compiler.compile(&expr);
+    println!("{:?}", opcodes);
     let mut vm = VM::new(opcodes);
-    let res = vm.run();
+    let res = vm.run(None);
     if let Some(val) = res {
         println!("Program exited with result: {}", val);
     } else {
