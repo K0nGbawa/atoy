@@ -38,6 +38,8 @@ pub enum Token {
     Lt,
     Gte,
     Lte,
+    And,
+    Or,
     Not,
     LParen,
     RParen,
@@ -96,6 +98,9 @@ impl std::fmt::Display for Token {
             Self::Return => write!(f, "return"),
             Self::While => write!(f, "while"),
             Self::Fn => write!(f, "fn"),
+            Self::And => write!(f, "and"),
+            Self::Or => write!(f, "or"),
+            Self::Not => write!(f, "not"),
         }
     }
 }
@@ -166,7 +171,7 @@ impl Lexer {
                 } else {
                     Ok(Token::Plus)
                 }
-            },
+            }
             '-' => {
                 if self.position < self.source.len() && self.source[self.position] == '=' {
                     self.position += 1;
@@ -174,7 +179,7 @@ impl Lexer {
                 } else {
                     Ok(Token::Minus)
                 }
-            },
+            }
             '*' => {
                 if self.position < self.source.len() && self.source[self.position] == '=' {
                     self.position += 1;
@@ -182,7 +187,7 @@ impl Lexer {
                 } else {
                     Ok(Token::Star)
                 }
-            },
+            }
             '/' => {
                 if self.position < self.source.len() && self.source[self.position] == '=' {
                     self.position += 1;
@@ -190,7 +195,7 @@ impl Lexer {
                 } else {
                     Ok(Token::Slash)
                 }
-            },
+            }
             '(' => Ok(Token::LParen),
             ')' => Ok(Token::RParen),
             ',' => Ok(Token::Comma),
@@ -279,6 +284,9 @@ impl Lexer {
                     "return" => Ok(Token::Return),
                     "while" => Ok(Token::While),
                     "fn" => Ok(Token::Fn),
+                    "and" => Ok(Token::And),
+                    "or" => Ok(Token::Or),
+                    "not" => Ok(Token::Not),
                     _ => Ok(Token::Ident(ident_name)),
                 }
             }

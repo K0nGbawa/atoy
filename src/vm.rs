@@ -102,6 +102,26 @@ impl VM {
                 OpCode::Lt => self.binary_op(gen_cmpop_closure!(<)),
                 OpCode::Gte => self.binary_op(gen_cmpop_closure!(>=)),
                 OpCode::Lte => self.binary_op(gen_cmpop_closure!(<=)),
+                OpCode::And(idx) => {
+                    let v = self.stack.last().expect("Stack underflow");
+                    if v.is_truthy() {
+                        self.stack.pop();
+                    } else {
+                        ip = *idx;
+                    }
+                }
+                OpCode::Or(idx) => {
+                    let v = self.stack.last().expect("Stack underflow");
+                    if v.is_truthy() {
+                        ip = *idx;
+                    } else {
+                        self.stack.pop();
+                    }
+                }
+                OpCode::Not => {
+                    let v = self.stack.pop().expect("Stack underflow");
+                    self.stack.push(Value::Bool(v.is_truthy()));
+                }
                 OpCode::LoadGlobal(ident) => {
                     let value = self.globals.get(ident).unwrap_or(&Value::None).clone();
                     self.stack.push(value);
