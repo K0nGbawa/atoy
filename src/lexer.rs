@@ -28,6 +28,10 @@ pub enum Token {
     Star,
     Slash,
     Assign,
+    PlusAssign,
+    MinusAssign,
+    StarAssign,
+    SlashAssign,
     Eq,
     NEq,
     Gt,
@@ -64,6 +68,10 @@ impl std::fmt::Display for Token {
             Self::Star => write!(f, "*"),
             Self::Slash => write!(f, "/"),
             Self::Assign => write!(f, "="),
+            Self::PlusAssign => write!(f, "+="),
+            Self::MinusAssign => write!(f, "-="),
+            Self::StarAssign => write!(f, "*="),
+            Self::SlashAssign => write!(f, "/="),
             Self::Eq => write!(f, "=="),
             Self::NEq => write!(f, "!="),
             Self::Gt => write!(f, ">"),
@@ -149,10 +157,38 @@ impl Lexer {
         let ch = self.source[self.position];
         self.position += 1;
         match ch {
-            '+' => Ok(Token::Plus),
-            '-' => Ok(Token::Minus),
-            '*' => Ok(Token::Star),
-            '/' => Ok(Token::Slash),
+            '+' => {
+                if self.position < self.source.len() && self.source[self.position] == '=' {
+                    self.position += 1;
+                    Ok(Token::PlusAssign)
+                } else {
+                    Ok(Token::Plus)
+                }
+            },
+            '-' => {
+                if self.position < self.source.len() && self.source[self.position] == '=' {
+                    self.position += 1;
+                    Ok(Token::MinusAssign)
+                } else {
+                    Ok(Token::Minus)
+                }
+            },
+            '*' => {
+                if self.position < self.source.len() && self.source[self.position] == '=' {
+                    self.position += 1;
+                    Ok(Token::StarAssign)
+                } else {
+                    Ok(Token::Star)
+                }
+            },
+            '/' => {
+                if self.position < self.source.len() && self.source[self.position] == '=' {
+                    self.position += 1;
+                    Ok(Token::SlashAssign)
+                } else {
+                    Ok(Token::Slash)
+                }
+            },
             '(' => Ok(Token::LParen),
             ')' => Ok(Token::RParen),
             ',' => Ok(Token::Comma),

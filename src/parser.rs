@@ -56,6 +56,11 @@ pub enum Stmt {
         name: String,
         value: Expr,
     },
+    CompoundAssign {
+        name: String,
+        op: BinOp,
+        value: Expr,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -241,6 +246,10 @@ impl Parser {
                 let res = match &left {
                     Expr::Ident(name) => match self.peek() {
                         Token::Assign => self.parse_assign_stmt(name.clone())?,
+                        Token::PlusAssign => self.parse_compound_assign_stmt(name.clone(), BinOp::Add)?,
+                        Token::MinusAssign => self.parse_compound_assign_stmt(name.clone(), BinOp::Sub)?,
+                        Token::StarAssign => self.parse_compound_assign_stmt(name.clone(), BinOp::Mul)?,
+                        Token::SlashAssign => self.parse_compound_assign_stmt(name.clone(), BinOp::Div)?,
                         _ => Stmt::Expr(left),
                     },
                     _ => Stmt::Expr(left),
@@ -257,6 +266,14 @@ impl Parser {
         let value = self.parse_cmp_op()?;
 
         Ok(Stmt::Assign { name, value })
+    }
+
+    fn parse_compound_assign_stmt(&mut self, name: String, op: BinOp) -> ParseResult<Stmt> {
+        self.advance();
+
+        let value = self.parse_cmp_op()?;
+
+        Ok(Stmt::CompoundAssign { name, op, value })
     }
 
     fn parse_if_stmt(&mut self) -> ParseResult<Stmt> {
@@ -469,7 +486,22 @@ impl Compiler {
             } => self.compile_if_expr(condition, then_branch, else_branch),
             Stmt::While { condition, stmts } => self.compile_while_expr(condition, stmts),
             Stmt::Assign { name, value } => self.compile_assign_expr(name, value),
+            Stmt::CompoundAssign { name, op, value } => {
+                self.compile_compound_assign_expr(name, op, value)
+            }
         }
+    }
+
+    fn compile_compound_assign_expr(&mut self, name: &String, op: &BinOp, value: &Expr) {
+        self.code.push(OpCode::LoadGlobal(name.clone()));
+        self.compile_expr(value);
+        self.code.push(match op {
+            BinOp::Add => OpCode::Add,
+            BinOp::Sub => OpCode::Sub,
+            BinOp::Mul => OpCode::Mul,
+            BinOp::Div => OpCode::Div,
+        });
+        self.code.push(OpCode::StoreGlobal(name.clone()));
     }
 
     fn compile_assign_expr(&mut self, name: &String, value: &Expr) {
