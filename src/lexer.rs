@@ -15,6 +15,15 @@ pub enum LexError {
 
     #[error("unexpected character '{ch}' at line {line} col {col}", line = position.line, col = position.col)]
     UnexpectedChar { ch: char, position: Position },
+
+    #[error("unexpected End of File")]
+    UnexpectedEof,
+
+    #[error("unexpected End of Line at line {line}", line = position.line)]
+    UnexpectedEol { position: Position },
+
+    #[error("illegal escaping sequence '\\{ch}' at line {line} col {col}", line = position.line, col = position.col)]
+    IllegalEscapingSequence { ch: char, position: Position },
 }
 
 type LexResult<T> = Result<T, LexError>;
@@ -23,6 +32,7 @@ type LexResult<T> = Result<T, LexError>;
 pub enum Token {
     Integer(i64),
     Float(f64),
+    String(String),
     Plus,
     Minus,
     Star,
@@ -81,7 +91,6 @@ impl std::fmt::Display for Token {
             Self::Lt => write!(f, "<"),
             Self::Gte => write!(f, ">="),
             Self::Lte => write!(f, "<="),
-            Self::Not => write!(f, "!"),
             Self::LParen => write!(f, "("),
             Self::RParen => write!(f, ")"),
             Self::Comma => write!(f, ","),
@@ -101,6 +110,7 @@ impl std::fmt::Display for Token {
             Self::And => write!(f, "and"),
             Self::Or => write!(f, "or"),
             Self::Not => write!(f, "not"),
+            Self::String(string) => write!(f, "{}", string.escape_debug()),
         }
     }
 }
@@ -164,6 +174,65 @@ impl Lexer {
         let ch = self.source[self.position];
         self.position += 1;
         match ch {
+            '"' | '\'' => {
+                let starting = ch;
+                let mut escaped = false;
+                let mut string = String::new();
+                while self.position < self.source.len() {
+                    let next_ch = self.source[self.position];
+                    if next_ch == starting {
+                        self.position += 1;
+                        return Ok(Token::String(string));
+                    } else if next_ch == '\\' && !escaped {
+                        escaped = true;
+                        self.position += 1;
+                    } else if escaped {
+                        escaped = false;
+                        if next_ch == '\n' {
+                            self.position += 1;
+                            continue;
+                        }
+                        if next_ch == 'u' {
+                            self.position += 1;
+                            let pos = self.position;
+                            let hex_str: [char; 4] = self.source[pos..pos + 4].try_into().unwrap();
+                            let mut result = 0;
+                            for c in hex_str {
+                                let digit = c.to_digit(16).unwrap();
+                                result = (result << 4) | digit;
+                            }
+                            let character = char::from_u32(result).unwrap();
+                            self.position += 4;
+                            string.push(character);
+                            continue;
+                        }
+                        let escaped = match next_ch {
+                            '"' => '"',
+                            '\'' => '\'',
+                            '\\' => '\\',
+                            'n' => '\n',
+                            't' => '\t',
+                            'r' => '\r',
+                            _ => {
+                                return Err(LexError::IllegalEscapingSequence {
+                                    ch: next_ch,
+                                    position: self.get_position(),
+                                });
+                            }
+                        };
+                        self.position += 1;
+                        string.push(escaped);
+                    } else if next_ch == '\n' {
+                        return Err(LexError::UnexpectedEol {
+                            position: self.get_position(),
+                        });
+                    } else {
+                        string.push(next_ch);
+                        self.position += 1;
+                    }
+                }
+                Err(LexError::UnexpectedEof)
+            }
             '+' => {
                 if self.position < self.source.len() && self.source[self.position] == '=' {
                     self.position += 1;
