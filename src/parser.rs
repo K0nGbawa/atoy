@@ -659,7 +659,7 @@ impl Compiler {
             self.push(OpCode::LoadGlobal(name.clone()));
         }
         self.compile_expr(value);
-        self.code.push(match op {
+        self.push(match op {
             BinOp::Add => OpCode::Add,
             BinOp::Sub => OpCode::Sub,
             BinOp::Mul => OpCode::Mul,
