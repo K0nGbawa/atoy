@@ -1,10 +1,15 @@
-use crate::parser::{OpCode, Value};
+use crate::{builtin, parser::{OpCode, Value}};
+use std::{collections::hash_map::HashMap, println, rc::Rc};
+
+pub struct Args {
+    pub values: Vec<Value>
+}
 
 pub struct VM {
     stack: Vec<Value>,
     code: Vec<OpCode>,
     ip: usize,
-    globals: Vec<Value>,
+    globals: HashMap<String, Value>,
 }
 
 macro_rules! gen_binop_closure {
@@ -33,14 +38,19 @@ macro_rules! gen_cmpop_closure {
 
 impl VM {
     pub fn new(code: Vec<OpCode>) -> Self {
-        Self {
+        let mut instance = Self {
             stack: Vec::new(),
             code,
             ip: 0,
-            globals: Vec::new(),
-        }
+            globals: HashMap::new(),
+        };
+        instance.add_builtin("println", Rc::new(builtin::println));
+        return instance
     }
-    pub fn run(&mut self) -> Value {
+    pub fn add_builtin(&mut self, name: &str, func: Rc<dyn Fn(Args) -> Value>) {
+        self.globals.insert(name.to_owned(), Value::BuiltInFunc(func));
+    }
+    pub fn run(&mut self) -> Option<Value> {
         while self.ip < self.code.len() {
             let op = &self.code[self.ip];
             self.ip += 1;
@@ -64,16 +74,13 @@ impl VM {
                 OpCode::Lt => self.binary_op(gen_cmpop_closure!(<)),
                 OpCode::Gte => self.binary_op(gen_cmpop_closure!(>=)),
                 OpCode::Lte => self.binary_op(gen_cmpop_closure!(<=)),
-                OpCode::LoadGlobal(idx) => {
-                    let value = self.globals.get(*idx).unwrap_or(&Value::None).clone();
+                OpCode::LoadGlobal(ident) => {
+                    let value = self.globals.get(ident).unwrap_or(&Value::None).clone();
                     self.stack.push(value);
                 }
-                OpCode::StoreGlobal(idx) => {
+                OpCode::StoreGlobal(ident) => {
                     let value = self.stack.pop().expect("Stack underflow");
-                    if *idx >= self.globals.len() {
-                        self.globals.resize(*idx + 1, Value::None);
-                    }
-                    self.globals[*idx] = value;
+                    self.globals.insert(ident.clone(), value);
                 }
                 OpCode::Jmp(usize) => self.ip = *usize,
                 OpCode::JmpIfNot(usize) => {
@@ -92,11 +99,30 @@ impl VM {
                         }
                     }
                 }
+                OpCode::Call(arg_count) => {
+                    let args = self.stack.split_off(self.stack.len() - arg_count);
+                    let callee = self.stack.pop().expect("stack underflow");
+                    if let Value::BuiltInFunc(func) = callee {
+                        let ret = func(Args {
+                            values: args
+                        });
+                        self.stack.push(ret);
+                    } else {
+                        panic!("Not a function");
+                    }
+                }
                 _ => panic!("{op:?}"),
             }
         }
         // Value::None
-        self.stack.pop().expect("Stack underflow")
+        self.stack.pop()
+    }
+    pub fn replace_code(&mut self, code: Vec<OpCode>) {
+        self.code = code;
+        self.ip = 0;
+    }
+    pub fn peek_code(&mut self) {
+        println!("{:?}", self.code);
     }
 
     fn binary_op<F>(&mut self, op: F)

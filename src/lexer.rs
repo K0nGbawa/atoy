@@ -1,3 +1,5 @@
+use std::fmt::write;
+
 use thiserror::Error;
 
 #[derive(Debug)]
@@ -35,6 +37,7 @@ pub enum Token {
     Not,
     LParen,
     RParen,
+    Comma,
     LBrace,
     RBrace,
     Semicolon,
@@ -70,6 +73,7 @@ impl std::fmt::Display for Token {
             Self::Not => write!(f, "!"),
             Self::LParen => write!(f, "("),
             Self::RParen => write!(f, ")"),
+            Self::Comma => write!(f, ","),
             Self::LBrace => write!(f, "{{"),
             Self::RBrace => write!(f, "}}"),
             Self::Semicolon => write!(f, ";"),
@@ -130,6 +134,7 @@ impl Lexer {
             '/' => Ok(Token::Slash),
             '(' => Ok(Token::LParen),
             ')' => Ok(Token::RParen),
+            ',' => Ok(Token::Comma),
             '{' => Ok(Token::LBrace),
             '}' => Ok(Token::RBrace),
             ';' => Ok(Token::Semicolon),
