@@ -1,0 +1,12 @@
+let fib = fn(n) {
+    if n == 1 return 1;
+    if n == 2 return 1;
+    return fib(n - 1) + fib(n - 2);
+};
+
+let n = 1;
+
+while n < 20 {
+    println(fib(n));
+    n = n + 1;
+}

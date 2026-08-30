@@ -1,8 +1,15 @@
-use crate::{builtin, parser::{OpCode, Value}};
-use std::{collections::hash_map::HashMap, println, rc::Rc};
+use crate::{
+    builtin,
+    parser::{
+        Func,
+        OpCode::{self, PushFn},
+        Value,
+    },
+};
+use std::{cell::RefCell, collections::hash_map::HashMap, panic, println, rc::Rc};
 
 pub struct Args {
-    pub values: Vec<Value>
+    pub values: Vec<Value>,
 }
 
 pub struct VM {
@@ -10,6 +17,8 @@ pub struct VM {
     code: Vec<OpCode>,
     ip: usize,
     globals: HashMap<String, Value>,
+    // 可能被闭包函数捕获
+    locals: Vec<Rc<RefCell<Env>>>,
 }
 
 macro_rules! gen_binop_closure {
@@ -36,6 +45,21 @@ macro_rules! gen_cmpop_closure {
     };
 }
 
+#[derive(Debug)]
+pub struct Env {
+    vars: Vec<Value>,
+}
+
+impl Env {
+    fn new() -> Self {
+        Self { vars: Vec::new() }
+    }
+    fn get_or_new_var(&mut self, idx: usize) -> &mut Value {
+        self.vars.resize(idx + 1, Value::None);
+        self.vars.get_mut(idx).unwrap()
+    }
+}
+
 impl VM {
     pub fn new(code: Vec<OpCode>) -> Self {
         let mut instance = Self {
@@ -43,17 +67,21 @@ impl VM {
             code,
             ip: 0,
             globals: HashMap::new(),
+            locals: Vec::new(),
         };
         instance.add_builtin("println", Rc::new(builtin::println));
-        return instance
+        return instance;
     }
     pub fn add_builtin(&mut self, name: &str, func: Rc<dyn Fn(Args) -> Value>) {
-        self.globals.insert(name.to_owned(), Value::BuiltInFunc(func));
+        self.globals
+            .insert(name.to_owned(), Value::BuiltInFunc(func));
     }
-    pub fn run(&mut self) -> Option<Value> {
-        while self.ip < self.code.len() {
-            let op = &self.code[self.ip];
-            self.ip += 1;
+    pub fn run(&mut self, codes: Option<&Vec<OpCode>>) -> Option<Value> {
+        let mut ip = 0;
+        while ip < codes.unwrap_or(&self.code).len() {
+            let op = &codes.unwrap_or(&self.code)[ip];
+            ip += 1;
+            // println!("{} {:?}", ip, op);
             match op {
                 OpCode::Push(value) => self.stack.push(value.clone()),
                 OpCode::Add => self.binary_op(gen_binop_closure!(+)),
@@ -82,34 +110,77 @@ impl VM {
                     let value = self.stack.pop().expect("Stack underflow");
                     self.globals.insert(ident.clone(), value);
                 }
-                OpCode::Jmp(usize) => self.ip = *usize,
+                OpCode::Jmp(usize) => ip = *usize,
                 OpCode::JmpIfNot(usize) => {
                     let value = self.stack.pop().expect("Stack overflow");
                     if let Value::Bool(value) = value {
                         if !value {
-                            self.ip = *usize
+                            ip = *usize
                         }
                     }
-                },
+                }
                 OpCode::JmpIf(usize) => {
                     let value = self.stack.pop().expect("Stack overflow");
                     if let Value::Bool(value) = value {
                         if value {
-                            self.ip = *usize
+                            ip = *usize
                         }
                     }
                 }
                 OpCode::Call(arg_count) => {
                     let args = self.stack.split_off(self.stack.len() - arg_count);
                     let callee = self.stack.pop().expect("stack underflow");
-                    if let Value::BuiltInFunc(func) = callee {
-                        let ret = func(Args {
-                            values: args
-                        });
-                        self.stack.push(ret);
-                    } else {
-                        panic!("Not a function");
+                    match callee {
+                        Value::BuiltInFunc(func) => {
+                            let ret = func(Args { values: args });
+                            self.stack.push(ret);
+                        }
+                        Value::Func(func) => {
+                            let param_count = func.param_count;
+                            if param_count != *arg_count {
+                                panic!("Arg count does not match")
+                            }
+                            let original_level = self.locals.len();
+                            self.locals.extend(func.env.clone());
+                            let mut new_env = Env::new();
+                            for i in 0..*arg_count {
+                                *new_env.get_or_new_var(i) = args[i].clone();
+                            }
+                            self.locals.push(Rc::new(RefCell::new(new_env)));
+                            let tmp = std::mem::take(&mut self.stack);
+                            let ret_val = self.run(Some(&func.code)).unwrap_or(Value::None);
+                            self.locals.truncate(original_level);
+                            self.stack = tmp;
+                            self.stack.push(ret_val);
+                        }
+                        _ => {
+                            panic!("Not a function");
+                        }
                     }
+                }
+                OpCode::LoadLocal(lev, idx) => {
+                    let real_lev = self.locals.len().checked_sub(*lev).unwrap();
+                    let fasts = self.locals.get_mut(real_lev).unwrap();
+                    self.stack
+                        .push(fasts.borrow_mut().get_or_new_var(*idx).clone())
+                }
+                OpCode::StoreLocal(lev, idx) => {
+                    let real_lev = self.locals.len().checked_sub(*lev).unwrap();
+                    //println!("{} {} {:?}",lev, real_lev, self.locals);
+                    let fasts = self.locals.get_mut(real_lev).unwrap();
+                    let value = self.stack.pop().expect("stack underflow");
+                    *fasts.borrow_mut().get_or_new_var(*idx) = value;
+                }
+                OpCode::EnterScope => self.locals.push(Rc::new(RefCell::new(Env::new()))),
+                OpCode::ExitScope => {
+                    self.locals.pop();
+                }
+                OpCode::PushFn(param_count, opcodes) => self.stack.push(Value::Func(Rc::new(
+                    Func::new(*param_count, opcodes.clone(), self.locals.clone()),
+                ))),
+                OpCode::Ret => {
+                    self.locals.pop();
+                    return self.stack.pop();
                 }
                 _ => panic!("{op:?}"),
             }
@@ -119,7 +190,6 @@ impl VM {
     }
     pub fn replace_code(&mut self, code: Vec<OpCode>) {
         self.code = code;
-        self.ip = 0;
     }
     pub fn peek_code(&mut self) {
         println!("{:?}", self.code);
@@ -150,7 +220,7 @@ mod vm_test {
         let expr = parser.parse()?;
         let opcodes = Compiler::compile_program(&expr);
         let mut vm = VM::new(opcodes);
-        let res = vm.run();
+        let res = vm.run(None);
         println!("{:#?}", res);
         Ok(())
     }

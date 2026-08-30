@@ -1,0 +1,19 @@
+let gen_counter = fn() {
+    let n = 0;
+    return fn() {
+        n = n + 1;
+        return n;
+    };
+};
+
+let counter1 = gen_counter();
+let counter2 = gen_counter();
+
+println(counter1());
+println(counter2());
+println(counter2());
+println(counter1());
+println(counter2());
+println(counter2());
+println(counter2());
+println(counter1());
