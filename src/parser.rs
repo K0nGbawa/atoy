@@ -75,7 +75,7 @@ pub enum Expr {
         right: Box<Expr>,
     },
     Unary(Box<Expr>),
-    Call(Box<Expr>, Vec<Expr>)
+    Call(Box<Expr>, Vec<Expr>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -98,7 +98,7 @@ pub enum OpCode {
     NEq,
     Neg,
     Ret,
-    Call(usize)
+    Call(usize),
 }
 
 pub enum Value {
@@ -117,7 +117,7 @@ impl std::fmt::Debug for Value {
             Integer(n) => write!(f, "Value(Integer({n}))"),
             Bool(n) => write!(f, "Value(Bool({n}))"),
             BuiltInFunc(func) => write!(f, "Value(BuiltinFunc({:p}))", *func),
-            None => write!(f, "Value(None)")
+            None => write!(f, "Value(None)"),
         }
     }
 }
@@ -131,7 +131,7 @@ impl PartialEq for Value {
             (Bool(n1), Bool(n2)) => *n1 == *n2,
             (BuiltInFunc(n1), BuiltInFunc(n2)) => Rc::ptr_eq(n1, n2),
             (None, None) => true,
-            (_, _) => false
+            (_, _) => false,
         }
     }
     fn ne(&self, other: &Self) -> bool {
@@ -147,7 +147,7 @@ impl Clone for Value {
             Integer(n) => Integer(*n),
             Bool(n) => Bool(*n),
             BuiltInFunc(func) => BuiltInFunc(func.clone()),
-            None => None
+            None => None,
         }
     }
 }
@@ -160,7 +160,7 @@ impl Display for Value {
             Integer(n) => write!(f, "{n}"),
             Bool(n) => write!(f, "{n}"),
             BuiltInFunc(func) => write!(f, "Builtin Function at {:p}", *func),
-            None => write!(f, "None")
+            None => write!(f, "None"),
         }
     }
 }
@@ -361,7 +361,6 @@ impl Parser {
         Ok(left)
     }
 
-
     pub fn parse_unary(&mut self) -> ParseResult<Expr> {
         match self.peek().clone() {
             Token::Minus => {
@@ -373,12 +372,10 @@ impl Parser {
                 self.advance();
                 self.parse_call()
             }
-            _other => {
-                self.parse_call()
-            }
+            _other => self.parse_call(),
         }
     }
-    
+
     pub fn parse_call(&mut self) -> ParseResult<Expr> {
         let mut left = self.parse_atom()?;
         if *self.peek() != Token::LParen {

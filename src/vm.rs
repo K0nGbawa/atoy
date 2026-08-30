@@ -1,8 +1,11 @@
-use crate::{builtin, parser::{OpCode, Value}};
+use crate::{
+    builtin,
+    parser::{OpCode, Value},
+};
 use std::{collections::hash_map::HashMap, println, rc::Rc};
 
 pub struct Args {
-    pub values: Vec<Value>
+    pub values: Vec<Value>,
 }
 
 pub struct VM {
@@ -45,10 +48,11 @@ impl VM {
             globals: HashMap::new(),
         };
         instance.add_builtin("println", Rc::new(builtin::println));
-        return instance
+        return instance;
     }
     pub fn add_builtin(&mut self, name: &str, func: Rc<dyn Fn(Args) -> Value>) {
-        self.globals.insert(name.to_owned(), Value::BuiltInFunc(func));
+        self.globals
+            .insert(name.to_owned(), Value::BuiltInFunc(func));
     }
     pub fn run(&mut self) -> Option<Value> {
         while self.ip < self.code.len() {
@@ -90,7 +94,7 @@ impl VM {
                             self.ip = *usize
                         }
                     }
-                },
+                }
                 OpCode::JmpIf(usize) => {
                     let value = self.stack.pop().expect("Stack overflow");
                     if let Value::Bool(value) = value {
@@ -103,9 +107,7 @@ impl VM {
                     let args = self.stack.split_off(self.stack.len() - arg_count);
                     let callee = self.stack.pop().expect("stack underflow");
                     if let Value::BuiltInFunc(func) = callee {
-                        let ret = func(Args {
-                            values: args
-                        });
+                        let ret = func(Args { values: args });
                         self.stack.push(ret);
                     } else {
                         panic!("Not a function");
