@@ -13,12 +13,18 @@ name = "atoy"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atoy-macros",
  "thiserror",
 ]
 
 [[package]]
 name = "atoy-macros"
 version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "proc-macro2"

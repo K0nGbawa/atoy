@@ -1,10 +1,12 @@
 use std::println;
 
+use atoy_macros::atoy_function;
+
 use crate::parser::Value;
 
 use crate::vm::Args;
 
-pub fn println(args: Args) -> Value {
+pub fn println(args: Args) -> Result<Value, String> {
     let values = args.values;
     println!(
         "{}",
@@ -14,5 +16,10 @@ pub fn println(args: Args) -> Value {
             .collect::<Vec<_>>()
             .join(" ")
     );
-    Value::None
+    Ok(Value::None)
+}
+
+#[atoy_function]
+pub fn add(a: i32, b: i32) -> i32 {
+    a + b
 }
