@@ -1,0 +1,11 @@
+[package]
+name = "atoy"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+anyhow = "1.0.104"
+thiserror = "2.0.20"

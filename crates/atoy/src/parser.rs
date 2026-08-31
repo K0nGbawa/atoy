@@ -1,13 +1,4 @@
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    fmt::{Display, write},
-    matches,
-    ops::Index,
-    option, println,
-    rc::Rc,
-    unreachable, write,
-};
+use std::{cell::RefCell, collections::HashMap, fmt::Display, matches, println, rc::Rc, write};
 
 use thiserror::Error;
 
@@ -80,8 +71,8 @@ pub enum Stmt {
         op: BinOp,
         value: Expr,
     },
-    Return(Expr),
     Block(Vec<Stmt>),
+    Return(Expr),
 }
 
 #[derive(Debug, Clone)]
@@ -744,15 +735,31 @@ impl Compiler {
     }
 
     fn compile_compound_assign_expr(&mut self, name: &String, op: &BinOp, value: &Expr) {
-        self.code.push(OpCode::LoadGlobal(name.clone()));
+        let mut is_global = true;
+        for (lev, table) in self.symbol_tables.iter().enumerate().rev() {
+            if let Some(idx) = table.get(name) {
+                self.push(OpCode::LoadLocal(self.symbol_tables.len() - lev, *idx));
+                is_global = false;
+                break;
+            }
+        }
+        if is_global {
+            self.push(OpCode::LoadGlobal(name.clone()));
+        }
         self.compile_expr(value);
-        self.code.push(match op {
+        self.push(match op {
             BinOp::Add => OpCode::Add,
             BinOp::Sub => OpCode::Sub,
             BinOp::Mul => OpCode::Mul,
             BinOp::Div => OpCode::Div,
         });
-        self.code.push(OpCode::StoreGlobal(name.clone()));
+        for (lev, table) in self.symbol_tables.iter().enumerate().rev() {
+            if let Some(idx) = table.get(name) {
+                self.push(OpCode::StoreLocal(self.symbol_tables.len() - lev, *idx));
+                return;
+            }
+        }
+        self.push(OpCode::StoreGlobal(name.clone()))
     }
 
     fn compile_assign_expr(&mut self, name: &String, value: &Expr) {
