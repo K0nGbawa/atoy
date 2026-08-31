@@ -104,8 +104,7 @@ impl VM {
             globals: HashMap::new(),
             locals: Vec::new(),
         };
-        instance.register_func("println", Rc::new(builtin::println));
-        builtin::__atoy_register_add(&mut instance);
+        builtin::__atoy_register_println(&mut instance);
         return instance;
     }
     pub fn register_func(&mut self, name: &str, func: Rc<dyn Fn(Args) -> Result<Value, String>>) {

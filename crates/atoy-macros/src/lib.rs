@@ -36,6 +36,19 @@ pub fn atoy_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
         .map(|(i, p)| {
             let name = &p.name;
             let ty = &p.ty;
+            if let Type::Path(p) = ty {
+                if let Some(seg) = p.path.segments.last() {
+                    if seg.ident == "Args" && i == params.len() - 1 {
+                        return quote_spanned! { name.span() =>
+                            let #name = crate::vm::Args::new(args.values.split_off(#i));
+                        }
+                    } else if seg.ident == "Args" {
+                        return quote! {
+                            compile_error!("The Args must be the last parameter.");
+                        }
+                    }
+                }
+            }
             quote_spanned! { name.span() =>
                 let #name = args.take::<#ty>().map_err(|e| format!("处理第 {} 个时参数出错: {}", #i + 1, e))?;
             }
@@ -46,7 +59,7 @@ pub fn atoy_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
         ReturnType::Default => {
             quote! {
                 #name(#(#param_names),*);
-                Ok(crate::parser::Value)
+                Ok(crate::parser::Value::None)
             }
         }
         ReturnType::Type(_, _) => {
