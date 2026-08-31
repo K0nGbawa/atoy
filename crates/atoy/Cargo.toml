@@ -9,3 +9,4 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 anyhow = "1.0.104"
 thiserror = "2.0.20"
+atoy-macros = { path = "../atoy-macros"}

@@ -1,15 +1,50 @@
 use crate::{
     builtin,
-    parser::{
-        Func,
-        OpCode::{self, PushFn},
-        Value,
-    },
+    parser::{Func, OpCode, Value},
 };
 use std::{cell::RefCell, collections::hash_map::HashMap, panic, println, rc::Rc};
 
+pub trait FromAtoyValue: Sized {
+    fn from_value(v: &Value) -> Result<Self, String>;
+}
+
+pub trait IntoAtoyValue: Sized {
+    fn into_value(self) -> Value;
+}
+
+impl FromAtoyValue for i32 {
+    fn from_value(v: &Value) -> Result<Self, String> {
+        match v {
+            Value::Integer(n) => Ok(*n as i32),
+            other => Err(format!("expect int, found {other}")),
+        }
+    }
+}
+
+impl IntoAtoyValue for i32 {
+    fn into_value(self) -> Value {
+        Value::Integer(self as i64)
+    }
+}
+
 pub struct Args {
     pub values: Vec<Value>,
+    pub pos: usize,
+}
+
+impl Args {
+    pub fn new(values: Vec<Value>) -> Self {
+        Self { values, pos: 0 }
+    }
+
+    pub fn take<T: FromAtoyValue>(&mut self) -> Result<T, String> {
+        let v = match self.values.get(self.pos) {
+            Some(v) => v,
+            None => return Err("param less".to_owned()),
+        };
+        self.pos += 1;
+        T::from_value(v)
+    }
 }
 
 pub struct VM {
@@ -69,10 +104,11 @@ impl VM {
             globals: HashMap::new(),
             locals: Vec::new(),
         };
-        instance.add_builtin("println", Rc::new(builtin::println));
+        instance.register_func("println", Rc::new(builtin::println));
+        builtin::__atoy_register_add(&mut instance);
         return instance;
     }
-    pub fn add_builtin(&mut self, name: &str, func: Rc<dyn Fn(Args) -> Value>) {
+    pub fn register_func(&mut self, name: &str, func: Rc<dyn Fn(Args) -> Result<Value, String>>) {
         self.globals
             .insert(name.to_owned(), Value::BuiltInFunc(func));
     }
@@ -152,7 +188,10 @@ impl VM {
                     let callee = self.stack.pop().expect("stack underflow");
                     match callee {
                         Value::BuiltInFunc(func) => {
-                            let ret = func(Args { values: args });
+                            let ret = match func(Args::new(args)) {
+                                Ok(ret) => ret,
+                                Err(e) => panic!("{}", e),
+                            };
                             self.stack.push(ret);
                         }
                         Value::Func(func) => {

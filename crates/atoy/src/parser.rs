@@ -171,7 +171,7 @@ pub enum Value {
     Float(f64),
     Integer(i64),
     Bool(bool),
-    BuiltInFunc(Rc<dyn Fn(Args) -> Value>),
+    BuiltInFunc(Rc<dyn Fn(Args) -> Result<Value, String>>),
     Func(Rc<Func>),
     None,
 }

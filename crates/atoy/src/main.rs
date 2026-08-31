@@ -15,7 +15,7 @@ fn repl() -> anyhow::Result<()> {
     let mut buffer = String::new();
     let opcodes = Vec::new();
     let mut vm = VM::new(opcodes);
-    vm.add_builtin(
+    vm.register_func(
         "exit",
         Rc::new(|_args| {
             std::process::exit(0);
