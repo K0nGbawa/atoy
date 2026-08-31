@@ -81,6 +81,7 @@ pub enum Expr {
     Float(f64),
     Bool(bool),
     Ident(String),
+    String(String),
     BinaryOp {
         left: Box<Expr>,
         op: BinOp,
@@ -171,7 +172,8 @@ pub enum Value {
     Float(f64),
     Integer(i64),
     Bool(bool),
-    BuiltInFunc(Rc<dyn Fn(Args) -> Result<Value, String>>),
+    String(Rc<String>),
+    BuiltInFunc(Rc<dyn Fn(Args) -> Value>),
     Func(Rc<Func>),
     None,
 }
@@ -185,6 +187,7 @@ impl std::fmt::Debug for Value {
             Bool(n) => write!(f, "Value(Bool({n}))"),
             BuiltInFunc(func) => write!(f, "Value(BuiltinFunc({:p}))", *func),
             Func(func) => write!(f, "Value(Func({:p}))", *func),
+            String(string) => write!(f, "Value(Rc(String({})))", **string),
             None => write!(f, "Value(None)"),
         }
     }
@@ -197,7 +200,19 @@ impl Value {
             Value::Float(f) => *f != 0.0 && !f.is_nan(),
             Value::Bool(bo) => *bo,
             Value::BuiltInFunc(_) | Value::Func(_) => true,
+            Value::String(string) => string.is_empty(),
             Value::None => false,
+        }
+    }
+    pub fn to_string(&self) -> String {
+        match self {
+            Value::Integer(i) => i.to_string(),
+            Value::Float(f) => f.to_string(),
+            Value::Bool(bo) => bo.to_string(),
+            Value::BuiltInFunc(rc) => format!("Builtin Function at {:p}", *rc),
+            Value::Func(rc) => format!("Function at {:p}", *rc),
+            Value::String(string) => (**string).clone(),
+            Value::None => "None".to_string(),
         }
     }
 }
@@ -211,6 +226,7 @@ impl PartialEq for Value {
             (Bool(n1), Bool(n2)) => *n1 == *n2,
             (BuiltInFunc(n1), BuiltInFunc(n2)) => Rc::ptr_eq(n1, n2),
             (Func(n1), Func(n2)) => Rc::ptr_eq(n1, n2),
+            (String(n1), String(n2)) => n1 == n2,
             (None, None) => true,
             (_, _) => false,
         }
@@ -229,6 +245,7 @@ impl Clone for Value {
             Bool(n) => Bool(*n),
             BuiltInFunc(func) => BuiltInFunc(func.clone()),
             Func(func) => Func(func.clone()),
+            String(s) => String(s.clone()),
             None => None,
         }
     }
@@ -243,6 +260,7 @@ impl Display for Value {
             Bool(n) => write!(f, "{n}"),
             BuiltInFunc(func) => write!(f, "Builtin Function at {:p}", *func),
             Func(func) => write!(f, "Function at {:p}", *func),
+            String(s) => write!(f, "\"{}\"", s),
             None => write!(f, "None"),
         }
     }
@@ -594,6 +612,10 @@ impl Parser {
 
     pub fn parse_atom(&mut self) -> ParseResult<Expr> {
         match self.peek().clone() {
+            Token::String(string) => {
+                self.advance();
+                Ok(Expr::String(string))
+            }
             Token::Float(n) => {
                 self.advance();
                 Ok(Expr::Float(n))
@@ -861,6 +883,9 @@ impl Compiler {
                     }
                 }
                 self.push(OpCode::LoadGlobal(name.clone()))
+            }
+            Expr::String(content) => {
+                self.push(OpCode::Push(Value::String(Rc::new(content.clone()))));
             }
             Expr::Call(expr, args) => {
                 self.compile_expr(expr);

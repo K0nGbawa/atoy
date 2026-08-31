@@ -12,7 +12,7 @@ pub fn println(args: Args) -> Result<Value, String> {
         "{}",
         values
             .iter()
-            .map(|v| format!("{}", v))
+            .map(|v| v.to_string())
             .collect::<Vec<_>>()
             .join(" ")
     );
