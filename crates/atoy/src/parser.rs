@@ -173,7 +173,7 @@ pub enum Value {
     Integer(i64),
     Bool(bool),
     String(Rc<String>),
-    BuiltInFunc(Rc<dyn Fn(Args) -> Value>),
+    BuiltInFunc(Rc<dyn Fn(Args) -> Result<Value, String>>),
     Func(Rc<Func>),
     None,
 }
