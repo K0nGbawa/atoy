@@ -1,3 +1,5 @@
+use atoy_macros::register_fns;
+
 use crate::{
     builtin,
     parser::{Func, OpCode, Value},
@@ -104,7 +106,12 @@ impl VM {
             globals: HashMap::new(),
             locals: Vec::new(),
         };
-        builtin::__atoy_register_println(&mut instance);
+        register_fns!(
+            &mut instance,
+            (
+                crate::builtin::println
+            )
+        );
         return instance;
     }
     pub fn register_func(&mut self, name: &str, func: Rc<dyn Fn(Args) -> Result<Value, String>>) {

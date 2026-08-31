@@ -16,3 +16,10 @@ pub fn println(args: Args){
             .join(" ")
     );
 }
+
+// #[atoy_function]
+// pub fn input(prompt: String) {
+//     let mut s = String::new();
+//     std::io::stdin().read_line(&mut s).unwrap();
+//     s.to_string();
+// }

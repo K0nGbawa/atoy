@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
-use syn::{FnArg, Ident, ItemFn, Pat, PatIdent, ReturnType, Signature, Type, parse_macro_input};
+use syn::{Expr, FnArg, Ident, ItemFn, Pat, PatIdent, Path, ReturnType, Signature, Token, Type, parenthesized, parse::{Parse, ParseStream}, parse_macro_input, punctuated::Punctuated};
 
 #[proc_macro_attribute]
 pub fn atoy_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -100,4 +100,40 @@ fn collect_params(sig: &Signature) -> Vec<ParamInfo> {
         }
     }
     params
+}
+
+struct RegisterFnArgs {
+    vm_expr: Expr,
+    funcs: Punctuated<Path, Token![,]>,
+}
+
+impl Parse for RegisterFnArgs {
+    // TODO: implement parsing logic
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let vm_expr = input.parse()?;
+        let _ = input.parse::<Token![,]>()?;
+        let content;
+        let _paren = parenthesized!(content in input);
+        let funcs = Punctuated::<Path, Token![,]>::parse_terminated(&content)?;
+        Ok(Self { vm_expr, funcs })
+    }
+}
+
+#[proc_macro]
+pub fn register_fns(input: TokenStream) -> TokenStream {
+    let RegisterFnArgs { vm_expr, funcs } = parse_macro_input!(input as RegisterFnArgs);
+    let (paths, funcs): (Vec<Path>, Vec<Ident>) = funcs.into_iter()
+        .map(|p| {
+            let mut punc = p.segments.clone();
+            let last = punc.pop().expect("should be at least one segment");
+            let ident = last.ident;
+            (Path { segments: punc, leading_colon: None}, format_ident!("__atoy_register_{}", ident))
+        })
+        .unzip();
+    let expanded = quote! {
+        #(
+            #paths #funcs(#vm_expr);
+        )*
+    };
+    TokenStream::from(expanded)
 }
