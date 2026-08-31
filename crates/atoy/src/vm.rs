@@ -1,3 +1,5 @@
+use atoy_macros::register_functions;
+
 use crate::{
     builtin,
     parser::{Func, OpCode, Value},
@@ -27,6 +29,12 @@ impl IntoAtoyValue for i32 {
     }
 }
 
+impl IntoAtoyValue for i64 {
+    fn into_value(self) -> Value {
+        Value::Integer(self)
+    }
+}
+
 pub struct Args {
     pub values: Vec<Value>,
     pub pos: usize,
@@ -44,6 +52,13 @@ impl Args {
         };
         self.pos += 1;
         T::from_value(v)
+    }
+    pub fn ensure_empty(&mut self) -> Result<(), String> {
+        if self.pos == self.values.len() {
+            Ok(())
+        } else {
+            Err(format!("Function takes {} args but {} were provided", self.pos, self.values.len()))
+        }
     }
 }
 
@@ -105,7 +120,11 @@ impl VM {
             locals: Vec::new(),
         };
         instance.register_func("println", Rc::new(builtin::println));
-        builtin::__atoy_register_add(&mut instance);
+        register_functions!(crate::builtin, &mut instance);
+        // instance.register_func("import_time", Rc::new(|args| {
+        register_functions!(crate::builtin::time, &mut instance);
+            // Ok(Value::None)
+        // }));
         return instance;
     }
     pub fn register_func(&mut self, name: &str, func: Rc<dyn Fn(Args) -> Result<Value, String>>) {
