@@ -1,4 +1,4 @@
-use std::{fmt::write, write};
+use std::{write};
 
 use thiserror::Error;
 

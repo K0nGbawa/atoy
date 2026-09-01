@@ -1,60 +1,251 @@
+use atoy_macros::register_fns;
+
 use crate::{
     builtin,
     parser::{Func, OpCode, Value},
 };
-use std::{cell::RefCell, collections::hash_map::HashMap, panic, println, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::hash_map::HashMap,
+    fmt::{Debug, Display, Formatter},
+    ops::RangeInclusive,
+    panic, println,
+    rc::Rc,
+    write,
+};
 
-pub trait FromAtoyValue: Sized {
-    fn from_value(v: &Value) -> Result<Self, String>;
-}
-
-pub trait IntoAtoyValue: Sized {
-    fn into_value(self) -> Value;
-}
-
-impl FromAtoyValue for i32 {
-    fn from_value(v: &Value) -> Result<Self, String> {
-        match v {
-            Value::Integer(n) => Ok(*n as i32),
-            other => Err(format!("expect int, found {other}")),
+macro_rules! impl_try_from_value {
+    ($from_type:ident, $type:ident) => {
+        impl TryFrom<&Value> for $type {
+            type Error = RuntimeError;
+            fn try_from(value: &Value) -> Result<Self, Self::Error> {
+                match value {
+                    Value::$from_type(n) => match $type::try_from(*n) {
+                        Ok(n) => Ok(n),
+                        Err(e) => Err(RuntimeError::OverflowError {
+                            required: stringify!($type).to_owned(),
+                            found: e.to_string(),
+                        }),
+                    },
+                    _ => Err(RuntimeError::TypeError {
+                        expected: ValueType::$from_type,
+                        found: ValueType::from(value),
+                        thrower: None,
+                    }),
+                }
+            }
         }
+    };
+}
+
+macro_rules! impl_try_from_value_no_overflow {
+    ($from_type:ident, $type:ident) => {
+        impl TryFrom<&Value> for $type {
+            type Error = RuntimeError;
+            fn try_from(value: &Value) -> Result<Self, Self::Error> {
+                match value {
+                    Value::$from_type(n) => Ok($type::from(*n)),
+                    _ => Err(RuntimeError::TypeError {
+                        expected: ValueType::$from_type,
+                        found: ValueType::from(value),
+                        thrower: None,
+                    }),
+                }
+            }
+        }
+    };
+}
+
+// 适用于，Rc<T>且T不是Copy
+macro_rules! impl_try_from_value_no_overflow_rc {
+    ($from_type:ident, $type:ident) => {
+        impl TryFrom<&Value> for $type {
+            type Error = RuntimeError;
+            fn try_from(value: &Value) -> Result<Self, Self::Error> {
+                match value {
+                    Value::$from_type(n) => Ok($type::from(&**n)),
+                    _ => Err(RuntimeError::TypeError {
+                        expected: ValueType::$from_type,
+                        found: ValueType::from(value),
+                        thrower: None,
+                    }),
+                }
+            }
+        }
+    };
+}
+
+// 可恶的孤儿规则（
+impl_try_from_value_no_overflow!(Integer, i64);
+impl_try_from_value!(Integer, i32);
+impl_try_from_value!(Integer, i16);
+impl_try_from_value!(Integer, i8);
+impl_try_from_value!(Integer, u64);
+impl_try_from_value!(Integer, u32);
+impl_try_from_value!(Integer, u16);
+impl_try_from_value!(Integer, u8);
+impl_try_from_value!(Integer, isize);
+impl_try_from_value!(Float, f64);
+// 不是为什么f32没有TryFrom<f64>
+// impl_try_from_value!(Float, f32);
+impl_try_from_value_no_overflow!(Bool, bool);
+impl_try_from_value_no_overflow_rc!(String, String);
+
+// 为所有能无损转为 i64 的整数类型实现 From
+macro_rules! impl_from_int_for_value {
+    ($($int:ty),*) => {
+        $(
+            impl From<$int> for Value {
+                fn from(n: $int) -> Self {
+                    Value::Integer(n.into())
+                }
+            }
+        )*
+    };
+}
+
+impl_from_int_for_value!(i8, i16, i32, i64, u8, u16, u32);
+
+impl From<String> for Value {
+    fn from(value: String) -> Self {
+        Self::String(Rc::new(value))
     }
 }
 
-impl IntoAtoyValue for i32 {
-    fn into_value(self) -> Value {
-        Value::Integer(self as i64)
+impl From<bool> for Value {
+    fn from(value: bool) -> Self {
+        Self::Bool(value)
     }
 }
 
 pub struct Args {
     pub values: Vec<Value>,
-    pub pos: usize,
 }
 
 impl Args {
     pub fn new(values: Vec<Value>) -> Self {
-        Self { values, pos: 0 }
+        Self { values }
     }
-
-    pub fn take<T: FromAtoyValue>(&mut self) -> Result<T, String> {
-        let v = match self.values.get(self.pos) {
-            Some(v) => v,
-            None => return Err("param less".to_owned()),
-        };
-        self.pos += 1;
-        T::from_value(v)
+    pub fn get_arg_into<'a, T: TryFrom<&'a Value, Error = RuntimeError>>(
+        &'a self,
+        i: usize,
+    ) -> RuntimeResult<T> {
+        if let Some(arg) = self.values.get(i) {
+            Ok(arg.try_into()?)
+        } else {
+            Err(RuntimeError::ParamError {
+                expected: ExpectedParamCount::Constant(i),
+                found: self.values.len(),
+            })
+        }
+    }
+    pub fn get_arg(&self, i: usize) -> RuntimeResult<&Value> {
+        if let Some(arg) = self.values.get(i) {
+            Ok(arg)
+        } else {
+            Err(RuntimeError::ParamError {
+                expected: ExpectedParamCount::Constant(i),
+                found: self.values.len(),
+            })
+        }
+    }
+    pub fn ensure_len(&self, len: usize) -> RuntimeResult<()> {
+        if self.values.len() != len {
+            Err(RuntimeError::ParamError {
+                expected: ExpectedParamCount::Constant(len),
+                found: self.values.len(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+    pub fn ensure_len_ranged(&self, len: RangeInclusive<usize>) -> RuntimeResult<()> {
+        let current_len = self.values.len();
+        if !len.contains(&current_len) {
+            Err(RuntimeError::ParamError {
+                expected: ExpectedParamCount::Range(len.clone()),
+                found: current_len,
+            })
+        } else {
+            Ok(())
+        }
     }
 }
 
-pub struct VM {
-    stack: Vec<Value>,
-    code: Vec<OpCode>,
-    ip: usize,
-    globals: HashMap<String, Value>,
-    // 可能被闭包函数捕获
-    locals: Vec<Rc<RefCell<Env>>>,
+pub enum ValueType {
+    Integer,
+    Float,
+    Bool,
+    String,
+    Function,
+    None,
 }
+
+impl From<&Value> for ValueType {
+    fn from(value: &Value) -> Self {
+        match value {
+            Value::Integer(_) => Self::Integer,
+            Value::Float(_) => Self::Float,
+            Value::Bool(_) => Self::Bool,
+            Value::Func(_) | Value::BuiltInFunc(_) => Self::Function,
+            Value::None => Self::None,
+            Value::String(_) => Self::String,
+        }
+    }
+}
+
+impl Display for ValueType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        match self {
+            Self::Integer => write!(f, "int"),
+            Self::Float => write!(f, "float"),
+            Self::Bool => write!(f, "bool"),
+            Self::Function => write!(f, "function"),
+            Self::None => write!(f, "none"),
+            Self::String => write!(f, "string"),
+        }
+    }
+}
+
+impl Debug for ValueType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(f, "ValueType({})", self)
+    }
+}
+
+#[derive(Debug)]
+pub enum ExpectedParamCount {
+    Constant(usize),
+    Range(RangeInclusive<usize>),
+}
+
+impl Display for ExpectedParamCount {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Constant(n) => write!(f, "{}", n),
+            Self::Range(range) => write!(f, "{}~{}", range.start(), range.end()),
+        }
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum RuntimeError {
+    #[error("ParamError: Function takes {expected} args but {found} were provided")]
+    ParamError {
+        expected: ExpectedParamCount,
+        found: usize,
+    },
+    #[error("TypeError: {thrower_str} expected type {expected} but found {found}", thrower_str = thrower.unwrap_or(""))]
+    TypeError {
+        expected: ValueType,
+        found: ValueType,
+        thrower: Option<&'static str>,
+    },
+    #[error("OverflowError: Required {required} but found {found}")]
+    OverflowError { required: String, found: String },
+}
+
+pub type RuntimeResult<T> = Result<T, RuntimeError>;
 
 macro_rules! gen_binop_closure {
     ($op:tt) => {
@@ -94,26 +285,46 @@ impl Env {
         self.vars.get_mut(idx).unwrap()
     }
 }
+pub struct VM {
+    stack: Vec<Value>,
+    code: Vec<OpCode>,
+    globals: HashMap<String, Value>,
+    // 可能被闭包函数捕获
+    locals: Vec<Rc<RefCell<Env>>>,
+    to_throw: Option<RuntimeError>,
+}
 
 impl VM {
     pub fn new(code: Vec<OpCode>) -> Self {
         let mut instance = Self {
             stack: Vec::new(),
             code,
-            ip: 0,
             globals: HashMap::new(),
             locals: Vec::new(),
+            to_throw: None,
         };
-        builtin::__atoy_register_println(&mut instance);
+        register_fns!(
+            &mut instance,
+            (
+                builtin::println,
+                builtin::input,
+                builtin::r#type
+            )
+        );
         return instance;
     }
-    pub fn register_func(&mut self, name: &str, func: Rc<dyn Fn(Args) -> Result<Value, String>>) {
+    pub fn register_func(&mut self, name: &str, func: Rc<dyn Fn(Args) -> RuntimeResult<Value>>) {
         self.globals
             .insert(name.to_owned(), Value::BuiltInFunc(func));
     }
     pub fn run(&mut self, codes: Option<&Vec<OpCode>>) -> Option<Value> {
         let mut ip = 0;
         while ip < codes.unwrap_or(&self.code).len() {
+            if let Some(error) = &self.to_throw {
+                println!("RuntimeError:\n  {}", error);
+                self.to_throw = None;
+                return None;
+            }
             let op = &codes.unwrap_or(&self.code)[ip];
             ip += 1;
             // println!("{} {:?}", ip, op);
@@ -125,11 +336,19 @@ impl VM {
                 OpCode::Div => self.binary_op(gen_binop_closure!(/)),
                 OpCode::Neg => {
                     let v = self.stack.pop().expect("Stack underflow");
-                    self.stack.push(match v {
+                    let val = match v {
                         Value::Integer(n) => Value::Integer(-n),
                         Value::Float(n) => Value::Float(-n),
-                        _ => panic!("Unsupport"),
-                    })
+                        _ => {
+                            self.throw(RuntimeError::TypeError {
+                                expected: ValueType::Integer,
+                                found: ValueType::from(&v),
+                                thrower: Some("Operator '-' "),
+                            });
+                            continue;
+                        }
+                    };
+                    self.stack.push(val)
                 }
                 OpCode::Eq => self.binary_op(gen_cmpop_closure!(==)),
                 OpCode::NEq => self.binary_op(gen_cmpop_closure!(!=)),
@@ -155,7 +374,7 @@ impl VM {
                 }
                 OpCode::Not => {
                     let v = self.stack.pop().expect("Stack underflow");
-                    self.stack.push(Value::Bool(v.is_truthy()));
+                    self.stack.push(Value::Bool(!v.is_truthy()));
                 }
                 OpCode::LoadGlobal(ident) => {
                     let value = self.globals.get(ident).unwrap_or(&Value::None).clone();
@@ -189,14 +408,21 @@ impl VM {
                         Value::BuiltInFunc(func) => {
                             let ret = match func(Args::new(args)) {
                                 Ok(ret) => ret,
-                                Err(e) => panic!("{}", e),
+                                Err(e) => {
+                                    self.throw(e);
+                                    break;
+                                }
                             };
                             self.stack.push(ret);
                         }
                         Value::Func(func) => {
                             let param_count = func.param_count;
                             if param_count != *arg_count {
-                                panic!("Arg count does not match")
+                                self.throw(RuntimeError::ParamError {
+                                    expected: ExpectedParamCount::Constant(param_count),
+                                    found: *arg_count,
+                                });
+                                break;
                             }
                             let original_level = self.locals.len();
                             self.locals.extend(func.env.clone());
@@ -212,7 +438,11 @@ impl VM {
                             self.stack.push(ret_val);
                         }
                         _ => {
-                            panic!("Not a function");
+                            self.throw(RuntimeError::TypeError {
+                                expected: ValueType::Function,
+                                found: ValueType::from(&callee),
+                                thrower: Some("Function call"),
+                            });
                         }
                     }
                 }
@@ -243,6 +473,11 @@ impl VM {
                 _ => panic!("{op:?}"),
             }
         }
+        if let Some(error) = &self.to_throw {
+            println!("RuntimeError:\n  {}", error);
+            self.to_throw = None;
+            return None;
+        }
         // Value::None
         self.stack.pop()
     }
@@ -251,6 +486,9 @@ impl VM {
     }
     pub fn peek_code(&mut self) {
         println!("{:?}", self.code);
+    }
+    pub fn throw(&mut self, error: RuntimeError) {
+        self.to_throw = Some(error);
     }
 
     fn binary_op<F>(&mut self, op: F)

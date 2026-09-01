@@ -173,7 +173,7 @@ pub enum Value {
     Integer(i64),
     Bool(bool),
     String(Rc<String>),
-    BuiltInFunc(Rc<dyn Fn(Args) -> Result<Value, String>>),
+    BuiltInFunc(Rc<dyn Fn(Args) -> crate::vm::RuntimeResult<Value>>),
     Func(Rc<Func>),
     None,
 }
@@ -260,7 +260,7 @@ impl Display for Value {
             Bool(n) => write!(f, "{n}"),
             BuiltInFunc(func) => write!(f, "Builtin Function at {:p}", *func),
             Func(func) => write!(f, "Function at {:p}", *func),
-            String(s) => write!(f, "\"{}\"", s),
+            String(s) => write!(f, "\"{}\"", s.escape_debug()),
             None => write!(f, "None"),
         }
     }
