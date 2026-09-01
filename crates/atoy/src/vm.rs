@@ -4,7 +4,7 @@ use crate::{
     builtin,
     parser::{Func, OpCode, Value},
 };
-use std::{cell::RefCell, collections::hash_map::HashMap, fmt::{Debug, Display, Formatter}, panic, println, rc::Rc};
+use std::{cell::RefCell, collections::hash_map::HashMap, fmt::{Debug, Display, Formatter}, panic, println, rc::Rc, write};
 
 macro_rules! impl_try_from_value {
     ($from_type:ident, $type:ident) => {
@@ -153,8 +153,7 @@ impl Display for ValueType {
 
 impl Debug for ValueType {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
-        write!(f, "ValueType({})", self);
-        Ok(())
+        write!(f, "ValueType({})", self)
     }
 }
 
