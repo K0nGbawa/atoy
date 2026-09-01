@@ -36,14 +36,14 @@ pub fn atoy_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
         .iter()
         .enumerate()
         .map(|(i, p)| {
-            let name = &p.name;
+            let arg_name = &p.name;
             let ty = &p.ty;
             if let Type::Path(p) = ty {
                 if let Some(seg) = p.path.segments.last() {
                     if seg.ident == "Args" && i == params.len() - 1 {
                         found_args = true;
-                        return quote_spanned! { name.span() =>
-                            let #name = args;
+                        return quote_spanned! { arg_name.span() =>
+                            let #arg_name = args;
                         }
                     } else if seg.ident == "Args" {
                         return quote! {
@@ -52,8 +52,20 @@ pub fn atoy_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     }
                 }
             }
-            quote_spanned! { name.span() =>
-                let #name = args.get_arg::<#ty>(#i)?;
+            quote_spanned! { arg_name.span() =>
+                let #arg_name = args.get_arg::<#ty>(#i)
+                    .map_err(|e| match e {
+                        crate::vm::RuntimeError::TypeError {
+                            expected,
+                            found,
+                            thrower: None
+                        } => crate::vm::RuntimeError::TypeError {
+                            expected,
+                            found,
+                            thrower: Some(concat!("Built-in Function `", stringify!(#name), "()`"))
+                        },
+                        other => other
+                    })?;
             }
         })
         .collect();

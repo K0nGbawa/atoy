@@ -18,7 +18,7 @@ macro_rules! impl_try_from_value {
                             Err(e) => Err(RuntimeError::OverflowError { required: stringify!($type).to_owned(), found: e.to_string() })
                         }
                     },
-                    _ => Err(RuntimeError::TypeError { expected: ValueType::$from_type, found: ValueType::from(value) })
+                    _ => Err(RuntimeError::TypeError { expected: ValueType::$from_type, found: ValueType::from(value), thrower: None })
                 }
             }
         }
@@ -32,7 +32,7 @@ macro_rules! impl_try_from_value_no_overflow {
             fn try_from(value: &Value) -> Result<Self, Self::Error> {
                 match value {
                     Value::$from_type(n) => Ok($type::from(*n)),
-                    _ => Err(RuntimeError::TypeError { expected: ValueType::$from_type, found: ValueType::from(value) })
+                    _ => Err(RuntimeError::TypeError { expected: ValueType::$from_type, found: ValueType::from(value), thrower: None })
                 }
             }
         }
@@ -47,7 +47,7 @@ macro_rules! impl_try_from_value_no_overflow_rc {
             fn try_from(value: &Value) -> Result<Self, Self::Error> {
                 match value {
                     Value::$from_type(n) => Ok($type::from(&**n)),
-                    _ => Err(RuntimeError::TypeError { expected: ValueType::$from_type, found: ValueType::from(value) })
+                    _ => Err(RuntimeError::TypeError { expected: ValueType::$from_type, found: ValueType::from(value), thrower: None })
                 }
             }
         }
@@ -164,10 +164,11 @@ pub enum RuntimeError {
         expected: usize,
         found: usize
     },
-    #[error("TypeError: Expected type {expected} but found {found}")]
+    #[error("TypeError: {thrower_str} expected type {expected} but found {found}", thrower_str = thrower.unwrap_or(""))]
     TypeError {
         expected: ValueType,
         found: ValueType,
+        thrower: Option<&'static str>
     },
     #[error("OverflowError: Required {required} but found {found}")]
     OverflowError {
@@ -273,7 +274,7 @@ impl VM {
                         Value::Integer(n) => Value::Integer(-n),
                         Value::Float(n) => Value::Float(-n),
                         _ => {
-                            self.throw(RuntimeError::TypeError { expected: ValueType::Integer, found: ValueType::from(&v) });
+                            self.throw(RuntimeError::TypeError { expected: ValueType::Integer, found: ValueType::from(&v), thrower: Some("Operator '-' ") });
                             continue;
                         }
                     };
@@ -365,7 +366,7 @@ impl VM {
                             
                         }
                         _ => {
-                            self.throw(RuntimeError::TypeError { expected: ValueType::Function, found: ValueType::from(&callee) });
+                            self.throw(RuntimeError::TypeError { expected: ValueType::Function, found: ValueType::from(&callee), thrower: Some("Function call") });
                         }
                     }
                 }
