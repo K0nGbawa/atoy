@@ -260,7 +260,7 @@ impl Display for Value {
             Bool(n) => write!(f, "{n}"),
             BuiltInFunc(func) => write!(f, "Builtin Function at {:p}", *func),
             Func(func) => write!(f, "Function at {:p}", *func),
-            String(s) => write!(f, "\"{}\"", s),
+            String(s) => write!(f, "\"{}\"", s.escape_debug()),
             None => write!(f, "None"),
         }
     }

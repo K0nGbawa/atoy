@@ -23,6 +23,10 @@ pub fn input(prompt: String) -> String {
     std::io::stdout().flush().unwrap();
     let mut s = String::new();
     std::io::stdin().read_line(&mut s).unwrap();
-    s.pop();
+    if s.ends_with("\r\n") {
+        s.truncate(s.len() - 2);
+    } else if s.ends_with('\n') {
+        s.truncate(s.len() - 1);
+    }
     s
 }
