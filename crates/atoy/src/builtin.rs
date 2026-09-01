@@ -2,8 +2,22 @@ use std::{io::Write, print, println};
 
 use atoy_macros::atoy_function;
 
-use crate::vm::Args;
+use crate::vm::{Args, RuntimeError, ValueType};
 
+fn try_add_fn_info(error: RuntimeError, name: &'static str) -> RuntimeError {
+    match error {
+        crate::vm::RuntimeError::TypeError {
+            expected,
+            found,
+            thrower: None,
+        } => crate::vm::RuntimeError::TypeError {
+            expected,
+            found,
+            thrower: Some(name),
+        },
+        other => other,
+    }
+}
 #[atoy_function]
 pub fn println(args: Args) {
     let values = args.values;
@@ -18,8 +32,8 @@ pub fn println(args: Args) {
 }
 
 #[atoy_function]
-pub fn input(prompt: String) -> String {
-    print!("{}", prompt);
+pub fn input(prompt: Option<String>) -> String {
+    print!("{}", prompt.unwrap_or_default());
     std::io::stdout().flush().unwrap();
     let mut s = String::new();
     std::io::stdin().read_line(&mut s).unwrap();
@@ -30,3 +44,9 @@ pub fn input(prompt: String) -> String {
     }
     s
 }
+
+#[atoy_function]
+pub fn r#type(value: &crate::parser::Value) -> String {
+    ValueType::from(value).to_string()
+}
+

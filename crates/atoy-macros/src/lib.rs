@@ -1,12 +1,24 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
 use syn::{
-    Expr, FnArg, Ident, ItemFn, Pat, PatIdent, Path, ReturnType, Signature, Token, Type,
-    parenthesized,
+    Expr, FnArg, GenericArgument, Ident, ItemFn, Pat, PatIdent, Path, PathArguments, ReturnType,
+    Signature, Token, Type, TypeReference, parenthesized,
     parse::{Parse, ParseStream},
     parse_macro_input,
     punctuated::Punctuated,
 };
+
+fn is_ref_value(ty: &Type) -> bool {
+    if let Type::Reference(TypeReference { elem, .. }) = ty
+        && let Type::Path(p) = &**elem
+        && let Some(seg) = p.path.segments.last()
+        && seg.ident == "Value"
+    {
+        true
+    } else {
+        false
+    }
+}
 
 #[proc_macro_attribute]
 pub fn atoy_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -19,6 +31,7 @@ pub fn atoy_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let inputs = &sig.inputs;
     let output = &sig.output;
     let params = collect_params(sig);
+    let escaped_name = name.to_string().trim_start_matches("r#").to_string();
     let register_fn = format_ident!("__atoy_register_{}", name);
 
     // if inputs.is_empty() {
@@ -38,6 +51,8 @@ pub fn atoy_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let param_names: Vec<_> = params.iter().map(|p| &p.name).collect();
     let len = param_names.len();
     let mut found_args = false;
+    let mut required_param_count = 0usize;
+    let mut optional_param_count = 0usize;
     let param_errors: Vec<_> = params
         .iter()
         .enumerate()
@@ -46,7 +61,27 @@ pub fn atoy_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let ty = &p.ty;
             if let Type::Path(p) = ty {
                 if let Some(seg) = p.path.segments.last() {
-                    if seg.ident == "Args" && i == params.len() - 1 {
+                    if seg.ident == "Option"
+                        && let PathArguments::AngleBracketed(args) = &seg.arguments
+                        && let GenericArgument::Type(abty) = args.args
+                            .first().expect("Expected type argument for Option")
+                    {
+                        optional_param_count += 1;
+                        let optional_param_idx = optional_param_count - 1 + required_param_count;
+                        return if is_ref_value(abty) {
+                            quote_spanned! { arg_name.span() =>
+                                let #arg_name = args.values.get(#optional_param_idx);
+                            }
+                        } else {
+                            quote_spanned! { arg_name.span() =>
+                                let #arg_name = args.values.get(#optional_param_idx)
+                                    .map(|v| {
+                                        TryInto::<#abty>::try_into(v)
+                                            .map_err(|e| crate::builtin::try_add_fn_info(e, concat!("Built-in Function `", #escaped_name, "()`")))
+                                    }).transpose()?;
+                            }
+                        }
+                    } else if seg.ident == "Args" && i == params.len() - 1 {
                         found_args = true;
                         return quote_spanned! { arg_name.span() =>
                             let #arg_name = args;
@@ -57,31 +92,40 @@ pub fn atoy_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
                         };
                     }
                 }
+            } else if is_ref_value(ty) {
+                if optional_param_count > 0 {
+                    return quote! {
+                        compile_error!("Optional parameters must be after required parameters.");
+                    }
+                }
+                required_param_count += 1;
+                return quote_spanned! { arg_name.span() =>
+                    let #arg_name = args.get_arg(#i)?;
+                }
             }
+            if optional_param_count > 0 {
+                return quote! {
+                    compile_error!("Optional parameters must be after required parameters.");
+                }
+            }
+            required_param_count += 1;
             quote_spanned! { arg_name.span() =>
-                let #arg_name = args.get_arg::<#ty>(#i)
-                    .map_err(|e| match e {
-                        crate::vm::RuntimeError::TypeError {
-                            expected,
-                            found,
-                            thrower: None
-                        } => crate::vm::RuntimeError::TypeError {
-                            expected,
-                            found,
-                            thrower: Some(concat!("Built-in Function `", stringify!(#name), "()`"))
-                        },
-                        other => other
-                    })?;
+                let #arg_name = args.get_arg_into::<#ty>(#i)
+                    .map_err(|e| crate::builtin::try_add_fn_info(e, concat!("Built-in Function `", #escaped_name, "()`")))?;
             }
         })
         .collect();
-
-    let ensure_length = if !found_args {
+    let total_param_count = required_param_count + optional_param_count;
+    let ensure_length = if found_args {
+        quote! {}
+    } else if optional_param_count > 0 {
         quote! {
-            args.ensure_len(#len)?;
+            args.ensure_len_ranged(#required_param_count..=#total_param_count)?;
         }
     } else {
-        proc_macro2::TokenStream::new()
+        quote! {
+            args.ensure_len(#required_param_count)?;
+        }
     };
 
     let invoke = match output {
@@ -104,7 +148,7 @@ pub fn atoy_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #vis #sig #block
 
         pub fn #register_fn(vm: &mut crate::vm::VM) {
-            vm.register_func(stringify!(#name), ::std::rc::Rc::new(|args: crate::vm::Args| -> crate::vm::RuntimeResult<crate::parser::Value> {
+            vm.register_func(#escaped_name, ::std::rc::Rc::new(|args: crate::vm::Args| -> crate::vm::RuntimeResult<crate::parser::Value> {
                 #ensure_length
                 #(#param_errors)*
                 #invoke

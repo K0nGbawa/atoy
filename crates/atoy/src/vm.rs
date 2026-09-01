@@ -8,6 +8,7 @@ use std::{
     cell::RefCell,
     collections::hash_map::HashMap,
     fmt::{Debug, Display, Formatter},
+    ops::RangeInclusive,
     panic, println,
     rc::Rc,
     write,
@@ -111,6 +112,12 @@ impl From<String> for Value {
     }
 }
 
+impl From<bool> for Value {
+    fn from(value: bool) -> Self {
+        Self::Bool(value)
+    }
+}
+
 pub struct Args {
     pub values: Vec<Value>,
 }
@@ -119,7 +126,7 @@ impl Args {
     pub fn new(values: Vec<Value>) -> Self {
         Self { values }
     }
-    pub fn get_arg<'a, T: TryFrom<&'a Value, Error = RuntimeError>>(
+    pub fn get_arg_into<'a, T: TryFrom<&'a Value, Error = RuntimeError>>(
         &'a self,
         i: usize,
     ) -> RuntimeResult<T> {
@@ -127,7 +134,17 @@ impl Args {
             Ok(arg.try_into()?)
         } else {
             Err(RuntimeError::ParamError {
-                expected: i,
+                expected: ExpectedParamCount::Constant(i),
+                found: self.values.len(),
+            })
+        }
+    }
+    pub fn get_arg(&self, i: usize) -> RuntimeResult<&Value> {
+        if let Some(arg) = self.values.get(i) {
+            Ok(arg)
+        } else {
+            Err(RuntimeError::ParamError {
+                expected: ExpectedParamCount::Constant(i),
                 found: self.values.len(),
             })
         }
@@ -135,8 +152,19 @@ impl Args {
     pub fn ensure_len(&self, len: usize) -> RuntimeResult<()> {
         if self.values.len() != len {
             Err(RuntimeError::ParamError {
-                expected: len,
+                expected: ExpectedParamCount::Constant(len),
                 found: self.values.len(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+    pub fn ensure_len_ranged(&self, len: RangeInclusive<usize>) -> RuntimeResult<()> {
+        let current_len = self.values.len();
+        if !len.contains(&current_len) {
+            Err(RuntimeError::ParamError {
+                expected: ExpectedParamCount::Range(len.clone()),
+                found: current_len,
             })
         } else {
             Ok(())
@@ -185,10 +213,28 @@ impl Debug for ValueType {
     }
 }
 
+#[derive(Debug)]
+pub enum ExpectedParamCount {
+    Constant(usize),
+    Range(RangeInclusive<usize>),
+}
+
+impl Display for ExpectedParamCount {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Constant(n) => write!(f, "{}", n),
+            Self::Range(range) => write!(f, "{}~{}", range.start(), range.end()),
+        }
+    }
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum RuntimeError {
     #[error("ParamError: Function takes {expected} args but {found} were provided")]
-    ParamError { expected: usize, found: usize },
+    ParamError {
+        expected: ExpectedParamCount,
+        found: usize,
+    },
     #[error("TypeError: {thrower_str} expected type {expected} but found {found}", thrower_str = thrower.unwrap_or(""))]
     TypeError {
         expected: ValueType,
@@ -242,7 +288,6 @@ impl Env {
 pub struct VM {
     stack: Vec<Value>,
     code: Vec<OpCode>,
-    ip: usize,
     globals: HashMap<String, Value>,
     // 可能被闭包函数捕获
     locals: Vec<Rc<RefCell<Env>>>,
@@ -254,14 +299,17 @@ impl VM {
         let mut instance = Self {
             stack: Vec::new(),
             code,
-            ip: 0,
             globals: HashMap::new(),
             locals: Vec::new(),
             to_throw: None,
         };
         register_fns!(
             &mut instance,
-            (crate::builtin::println, crate::builtin::input)
+            (
+                builtin::println,
+                builtin::input,
+                builtin::r#type
+            )
         );
         return instance;
     }
@@ -371,7 +419,7 @@ impl VM {
                             let param_count = func.param_count;
                             if param_count != *arg_count {
                                 self.throw(RuntimeError::ParamError {
-                                    expected: param_count,
+                                    expected: ExpectedParamCount::Constant(param_count),
                                     found: *arg_count,
                                 });
                                 break;
