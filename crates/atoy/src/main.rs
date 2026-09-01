@@ -31,42 +31,47 @@ fn repl() -> anyhow::Result<()> {
         io::stdin().read_line(&mut buffer)?;
         let mut lexer = Lexer::new(buffer.clone());
         let res = lexer.tokenize();
-        if let Ok(tokens) = res {
-            let mut parser = Parser::new(tokens);
-            let parse_result = parser.parse();
-            println!("{:?}", parse_result);
-            match parse_result {
-                Ok(tree) => {
-                    let mut compiler = Compiler::new();
-                    vm.replace_code(compiler.compile(&tree));
-                    vm.peek_code();
-                    let res = vm.run(None);
-                    match res {
-                        None => {}
-                        Some(val) => println!("{}", val),
+        match res {
+            Ok(tokens) => {
+
+                let mut parser = Parser::new(tokens);
+                let parse_result = parser.parse();
+                println!("{:?}", parse_result);
+                match parse_result {
+                    Ok(tree) => {
+                        let mut compiler = Compiler::new();
+                        vm.replace_code(compiler.compile(&tree));
+                        vm.peek_code();
+                        let res = vm.run(None);
+                        match res {
+                            None => {}
+                            Some(val) => println!("{}", val),
+                        }
+                        buffer.clear()
                     }
-                    buffer.clear()
-                }
-                Err(err) => match &err {
-                    ParseError::UnexpectedEof => continue,
-                    ParseError::ExpectedToken(_e, a) => {
-                        if a == "EOF" {
-                            continue;
-                        } else {
-                            println!("Syntax Error: {}", err);
+                    Err(err) => match &err {
+                        ParseError::UnexpectedEof => continue,
+                        ParseError::ExpectedToken(_e, a) => {
+                            if a == "EOF" {
+                                continue;
+                            } else {
+                                println!("Syntax Error: {}", err);
+                                buffer.clear();
+                                continue;
+                            }
+                        }
+                        _ => {
+                            println!("Syntax Error: {:}", err);
                             buffer.clear();
                             continue;
                         }
-                    }
-                    _ => {
-                        println!("Syntax Error: {:}", err);
-                        buffer.clear();
-                        continue;
-                    }
-                },
+                    },
+                }
             }
-        } else {
-            println!("Syntax Error: {:?}", res)
+            Err(e) => {
+                println!("Syntax Error: {:}", e);
+                buffer.clear();
+            }
         }
     }
 }
