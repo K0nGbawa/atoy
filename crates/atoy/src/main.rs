@@ -33,15 +33,14 @@ fn repl() -> anyhow::Result<()> {
         let res = lexer.tokenize();
         match res {
             Ok(tokens) => {
-
                 let mut parser = Parser::new(tokens);
                 let parse_result = parser.parse();
-                println!("{:?}", parse_result);
+                // println!("{:?}", parse_result);
                 match parse_result {
                     Ok(tree) => {
                         let mut compiler = Compiler::new();
                         vm.replace_code(compiler.compile(&tree));
-                        vm.peek_code();
+                        // vm.peek_code();
                         let res = vm.run(None);
                         match res {
                             None => {}

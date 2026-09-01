@@ -4,7 +4,14 @@ use crate::{
     builtin,
     parser::{Func, OpCode, Value},
 };
-use std::{cell::RefCell, collections::hash_map::HashMap, fmt::{Debug, Display, Formatter}, panic, println, rc::Rc, write};
+use std::{
+    cell::RefCell,
+    collections::hash_map::HashMap,
+    fmt::{Debug, Display, Formatter},
+    panic, println,
+    rc::Rc,
+    write,
+};
 
 macro_rules! impl_try_from_value {
     ($from_type:ident, $type:ident) => {
@@ -12,13 +19,18 @@ macro_rules! impl_try_from_value {
             type Error = RuntimeError;
             fn try_from(value: &Value) -> Result<Self, Self::Error> {
                 match value {
-                    Value::$from_type(n) => {
-                        match $type::try_from(*n) {
-                            Ok(n) => Ok(n),
-                            Err(e) => Err(RuntimeError::OverflowError { required: stringify!($type).to_owned(), found: e.to_string() })
-                        }
+                    Value::$from_type(n) => match $type::try_from(*n) {
+                        Ok(n) => Ok(n),
+                        Err(e) => Err(RuntimeError::OverflowError {
+                            required: stringify!($type).to_owned(),
+                            found: e.to_string(),
+                        }),
                     },
-                    _ => Err(RuntimeError::TypeError { expected: ValueType::$from_type, found: ValueType::from(value), thrower: None })
+                    _ => Err(RuntimeError::TypeError {
+                        expected: ValueType::$from_type,
+                        found: ValueType::from(value),
+                        thrower: None,
+                    }),
                 }
             }
         }
@@ -32,7 +44,11 @@ macro_rules! impl_try_from_value_no_overflow {
             fn try_from(value: &Value) -> Result<Self, Self::Error> {
                 match value {
                     Value::$from_type(n) => Ok($type::from(*n)),
-                    _ => Err(RuntimeError::TypeError { expected: ValueType::$from_type, found: ValueType::from(value), thrower: None })
+                    _ => Err(RuntimeError::TypeError {
+                        expected: ValueType::$from_type,
+                        found: ValueType::from(value),
+                        thrower: None,
+                    }),
                 }
             }
         }
@@ -47,13 +63,16 @@ macro_rules! impl_try_from_value_no_overflow_rc {
             fn try_from(value: &Value) -> Result<Self, Self::Error> {
                 match value {
                     Value::$from_type(n) => Ok($type::from(&**n)),
-                    _ => Err(RuntimeError::TypeError { expected: ValueType::$from_type, found: ValueType::from(value), thrower: None })
+                    _ => Err(RuntimeError::TypeError {
+                        expected: ValueType::$from_type,
+                        found: ValueType::from(value),
+                        thrower: None,
+                    }),
                 }
             }
         }
     };
 }
-
 
 // 可恶的孤儿规则（
 impl_try_from_value_no_overflow!(Integer, i64);
@@ -93,23 +112,32 @@ impl From<String> for Value {
 }
 
 pub struct Args {
-    pub values: Vec<Value>
+    pub values: Vec<Value>,
 }
 
 impl Args {
     pub fn new(values: Vec<Value>) -> Self {
         Self { values }
     }
-    pub fn get_arg<'a, T: TryFrom<&'a Value, Error = RuntimeError>>(&'a self, i: usize) -> RuntimeResult<T> {
+    pub fn get_arg<'a, T: TryFrom<&'a Value, Error = RuntimeError>>(
+        &'a self,
+        i: usize,
+    ) -> RuntimeResult<T> {
         if let Some(arg) = self.values.get(i) {
             Ok(arg.try_into()?)
         } else {
-            Err(RuntimeError::ParamError { expected: i, found: self.values.len() })
+            Err(RuntimeError::ParamError {
+                expected: i,
+                found: self.values.len(),
+            })
         }
     }
     pub fn ensure_len(&self, len: usize) -> RuntimeResult<()> {
         if self.values.len() != len {
-            Err(RuntimeError::ParamError { expected: len, found: self.values.len() })
+            Err(RuntimeError::ParamError {
+                expected: len,
+                found: self.values.len(),
+            })
         } else {
             Ok(())
         }
@@ -122,7 +150,7 @@ pub enum ValueType {
     Bool,
     String,
     Function,
-    None
+    None,
 }
 
 impl From<&Value> for ValueType {
@@ -133,7 +161,7 @@ impl From<&Value> for ValueType {
             Value::Bool(_) => Self::Bool,
             Value::Func(_) | Value::BuiltInFunc(_) => Self::Function,
             Value::None => Self::None,
-            Value::String(_) => Self::String
+            Value::String(_) => Self::String,
         }
     }
 }
@@ -146,7 +174,7 @@ impl Display for ValueType {
             Self::Bool => write!(f, "bool"),
             Self::Function => write!(f, "function"),
             Self::None => write!(f, "none"),
-            Self::String => write!(f, "string")
+            Self::String => write!(f, "string"),
         }
     }
 }
@@ -160,25 +188,18 @@ impl Debug for ValueType {
 #[derive(thiserror::Error, Debug)]
 pub enum RuntimeError {
     #[error("ParamError: Function takes {expected} args but {found} were provided")]
-    ParamError {
-        expected: usize,
-        found: usize
-    },
+    ParamError { expected: usize, found: usize },
     #[error("TypeError: {thrower_str} expected type {expected} but found {found}", thrower_str = thrower.unwrap_or(""))]
     TypeError {
         expected: ValueType,
         found: ValueType,
-        thrower: Option<&'static str>
+        thrower: Option<&'static str>,
     },
     #[error("OverflowError: Required {required} but found {found}")]
-    OverflowError {
-        required: String,
-        found: String,
-    }
+    OverflowError { required: String, found: String },
 }
 
 pub type RuntimeResult<T> = Result<T, RuntimeError>;
-
 
 macro_rules! gen_binop_closure {
     ($op:tt) => {
@@ -225,7 +246,7 @@ pub struct VM {
     globals: HashMap<String, Value>,
     // 可能被闭包函数捕获
     locals: Vec<Rc<RefCell<Env>>>,
-    to_throw: Option<RuntimeError>
+    to_throw: Option<RuntimeError>,
 }
 
 impl VM {
@@ -236,14 +257,11 @@ impl VM {
             ip: 0,
             globals: HashMap::new(),
             locals: Vec::new(),
-            to_throw: None
+            to_throw: None,
         };
         register_fns!(
             &mut instance,
-            (
-                crate::builtin::println,
-                crate::builtin::input
-            )
+            (crate::builtin::println, crate::builtin::input)
         );
         return instance;
     }
@@ -274,7 +292,11 @@ impl VM {
                         Value::Integer(n) => Value::Integer(-n),
                         Value::Float(n) => Value::Float(-n),
                         _ => {
-                            self.throw(RuntimeError::TypeError { expected: ValueType::Integer, found: ValueType::from(&v), thrower: Some("Operator '-' ") });
+                            self.throw(RuntimeError::TypeError {
+                                expected: ValueType::Integer,
+                                found: ValueType::from(&v),
+                                thrower: Some("Operator '-' "),
+                            });
                             continue;
                         }
                     };
@@ -341,14 +363,17 @@ impl VM {
                                 Err(e) => {
                                     self.throw(e);
                                     break;
-                                },
+                                }
                             };
                             self.stack.push(ret);
                         }
                         Value::Func(func) => {
                             let param_count = func.param_count;
                             if param_count != *arg_count {
-                                self.throw(RuntimeError::ParamError { expected: param_count, found: *arg_count });
+                                self.throw(RuntimeError::ParamError {
+                                    expected: param_count,
+                                    found: *arg_count,
+                                });
                                 break;
                             }
                             let original_level = self.locals.len();
@@ -363,10 +388,13 @@ impl VM {
                             self.locals.truncate(original_level);
                             self.stack = tmp;
                             self.stack.push(ret_val);
-                            
                         }
                         _ => {
-                            self.throw(RuntimeError::TypeError { expected: ValueType::Function, found: ValueType::from(&callee), thrower: Some("Function call") });
+                            self.throw(RuntimeError::TypeError {
+                                expected: ValueType::Function,
+                                found: ValueType::from(&callee),
+                                thrower: Some("Function call"),
+                            });
                         }
                     }
                 }

@@ -1,6 +1,12 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
-use syn::{Expr, FnArg, Ident, ItemFn, Pat, PatIdent, Path, ReturnType, Signature, Token, Type, parenthesized, parse::{Parse, ParseStream}, parse_macro_input, punctuated::Punctuated};
+use syn::{
+    Expr, FnArg, Ident, ItemFn, Pat, PatIdent, Path, ReturnType, Signature, Token, Type,
+    parenthesized,
+    parse::{Parse, ParseStream},
+    parse_macro_input,
+    punctuated::Punctuated,
+};
 
 #[proc_macro_attribute]
 pub fn atoy_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -14,7 +20,7 @@ pub fn atoy_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let output = &sig.output;
     let params = collect_params(sig);
     let register_fn = format_ident!("__atoy_register_{}", name);
-    
+
     // if inputs.is_empty() {
     //     let expanded = quote! {
     //         #(#attrs)*
@@ -44,11 +50,11 @@ pub fn atoy_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
                         found_args = true;
                         return quote_spanned! { arg_name.span() =>
                             let #arg_name = args;
-                        }
+                        };
                     } else if seg.ident == "Args" {
                         return quote! {
                             compile_error!("The Args must be the last parameter.");
-                        }
+                        };
                     }
                 }
             }
@@ -146,12 +152,19 @@ impl Parse for RegisterFnArgs {
 #[proc_macro]
 pub fn register_fns(input: TokenStream) -> TokenStream {
     let RegisterFnArgs { vm_expr, funcs } = parse_macro_input!(input as RegisterFnArgs);
-    let (paths, funcs): (Vec<Path>, Vec<Ident>) = funcs.into_iter()
+    let (paths, funcs): (Vec<Path>, Vec<Ident>) = funcs
+        .into_iter()
         .map(|p| {
             let mut punc = p.segments.clone();
             let last = punc.pop().expect("should be at least one segment");
             let ident = last.ident;
-            (Path { segments: punc, leading_colon: None}, format_ident!("__atoy_register_{}", ident))
+            (
+                Path {
+                    segments: punc,
+                    leading_colon: None,
+                },
+                format_ident!("__atoy_register_{}", ident),
+            )
         })
         .unzip();
     let expanded = quote! {
