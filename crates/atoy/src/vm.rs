@@ -304,7 +304,7 @@ impl VM {
                 }
                 OpCode::Not => {
                     let v = self.stack.pop().expect("Stack underflow");
-                    self.stack.push(Value::Bool(v.is_truthy()));
+                    self.stack.push(Value::Bool(!v.is_truthy()));
                 }
                 OpCode::LoadGlobal(ident) => {
                     let value = self.globals.get(ident).unwrap_or(&Value::None).clone();
