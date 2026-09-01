@@ -14,21 +14,21 @@ pub fn atoy_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let output = &sig.output;
     let params = collect_params(sig);
     let register_fn = format_ident!("__atoy_register_{}", name);
+    
+    // if inputs.is_empty() {
+    //     let expanded = quote! {
+    //         #(#attrs)*
+    //         #vis #sig #block
 
-    if inputs.is_empty() {
-        let expanded = quote! {
-            #(#attrs)*
-            #vis #sig #block
-
-            pub fn #register_fn(vm: &mut crate::vm::VM) {
-                vm.register_func(stringify!(#name), ::std::rc::Rc::new(|args: crate::vm::Args| -> Result<crate::parser::Value> {
-                    let result = #name();
-                    Ok(result.into())
-                }))
-            }
-        };
-        return TokenStream::from(expanded);
-    }
+    //         pub fn #register_fn(vm: &mut crate::vm::VM) {
+    //             vm.register_func(stringify!(#name), ::std::rc::Rc::new(|args: crate::vm::Args| -> Result<crate::parser::Value> {
+    //                 let result = #name();
+    //                 Ok(result.into())
+    //             }))
+    //         }
+    //     };
+    //     return TokenStream::from(expanded);
+    // }
     let param_names: Vec<_> = params.iter().map(|p| &p.name).collect();
     let param_errors: Vec<_> = params
         .iter()
@@ -39,8 +39,9 @@ pub fn atoy_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
             if let Type::Path(p) = ty {
                 if let Some(seg) = p.path.segments.last() {
                     if seg.ident == "Args" && i == params.len() - 1 {
+                        // 说实话我觉得Args做成mutable不太好
                         return quote_spanned! { name.span() =>
-                            let #name = crate::vm::Args::new(args.values.split_off(#i));
+                            let mut #name = crate::vm::Args::new(args.values.split_off(#i));
                         }
                     } else if seg.ident == "Args" {
                         return quote! {
@@ -77,6 +78,7 @@ pub fn atoy_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
         pub fn #register_fn(vm: &mut crate::vm::VM) {
             vm.register_func(stringify!(#name), ::std::rc::Rc::new(|mut args: crate::vm::Args| -> Result<crate::parser::Value, String> {
                 #(#param_errors)*
+                args.ensure_empty()?;
                 #invoke
             }));
         }

@@ -29,6 +29,12 @@ impl IntoAtoyValue for i32 {
     }
 }
 
+impl IntoAtoyValue for i64 {
+    fn into_value(self) -> Value {
+        Value::Integer(self)
+    }
+}
+
 pub struct Args {
     pub values: Vec<Value>,
     pub pos: usize,
@@ -46,6 +52,13 @@ impl Args {
         };
         self.pos += 1;
         T::from_value(v)
+    }
+    pub fn ensure_empty(&mut self) -> Result<(), String> {
+        if self.pos == self.values.len() {
+            Ok(())
+        } else {
+            Err(format!("Function takes {} args but {} were provided", self.pos, self.values.len()))
+        }
     }
 }
 
