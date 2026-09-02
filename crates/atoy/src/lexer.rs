@@ -1,6 +1,8 @@
-use std::{write};
+use std::write;
 
 use thiserror::Error;
+
+use crate::lexer::Token::Colon;
 
 #[derive(Debug)]
 pub struct Position {
@@ -56,6 +58,11 @@ pub enum Token {
     Comma,
     LBrace,
     RBrace,
+    LBracket,
+    RBracket,
+    Concat,
+    Dot,
+    Colon,
     Semicolon,
     Ident(String),
     Eof,
@@ -110,6 +117,11 @@ impl std::fmt::Display for Token {
             Self::And => write!(f, "and"),
             Self::Or => write!(f, "or"),
             Self::Not => write!(f, "not"),
+            Self::Colon => write!(f, ":"),
+            Self::Concat => write!(f, ".."),
+            Self::Dot => write!(f, "."),
+            Self::LBracket => write!(f, "["),
+            Self::RBracket => write!(f, "]"),
             Self::String(string) => write!(f, "{}", string.escape_debug()),
         }
     }
@@ -303,6 +315,17 @@ impl Lexer {
                     Ok(Token::Not)
                 }
             }
+            '.' => {
+                if self.position < self.source.len() && self.source[self.position] == '.' {
+                    self.position += 1;
+                    Ok(Token::Concat)
+                } else {
+                    Ok(Token::Dot)
+                }
+            }
+            ':' => Ok(Token::Colon),
+            '[' => Ok(Token::LBracket),
+            ']' => Ok(Token::RBracket),
             '0'..='9' => {
                 let mut num_str = String::new();
                 let mut is_float = false;

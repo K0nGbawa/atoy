@@ -178,6 +178,9 @@ pub enum ValueType {
     Bool,
     String,
     Function,
+    Set,
+    Array,
+    Table,
     None,
 }
 
@@ -190,6 +193,9 @@ impl From<&Value> for ValueType {
             Value::Func(_) | Value::BuiltInFunc(_) => Self::Function,
             Value::None => Self::None,
             Value::String(_) => Self::String,
+            Value::Set(_) => Self::Set,
+            Value::Array(_) => Self::Array,
+            Value::Table(_) => Self::Table,
         }
     }
 }
@@ -203,6 +209,9 @@ impl Display for ValueType {
             Self::Function => write!(f, "function"),
             Self::None => write!(f, "none"),
             Self::String => write!(f, "string"),
+            Self::Set => write!(f, "set"),
+            Self::Array => write!(f, "array"),
+            Self::Table => write!(f, "table"),
         }
     }
 }
@@ -243,6 +252,8 @@ pub enum RuntimeError {
     },
     #[error("OverflowError: Required {required} but found {found}")]
     OverflowError { required: String, found: String },
+    #[error("IndexError: Index {index} out of bounds for length {len}")]
+    IndexError { index: usize, len: usize },
 }
 
 pub type RuntimeResult<T> = Result<T, RuntimeError>;
@@ -308,7 +319,8 @@ impl VM {
             (
                 builtin::println,
                 builtin::input,
-                builtin::r#type
+                builtin::r#type,
+                builtin::table
             )
         );
         return instance;
@@ -470,7 +482,106 @@ impl VM {
                     self.locals.pop();
                     return self.stack.pop();
                 }
-                _ => panic!("{op:?}"),
+                OpCode::Concat => {
+                    let b = self.stack.pop().expect("Stack underflow");
+                    let a = self.stack.pop().expect("Stack underflow");
+                    self.stack
+                        .push(Value::String(Rc::new(format!("{}{}", a, b))));
+                }
+                OpCode::Index => {
+                    let b = self.stack.pop().expect("Stack underflow");
+                    let a = self.stack.pop().expect("Stack underflow");
+                    match (a, b) {
+                        (Value::Table(t), v) => {
+                            self.stack.push(
+                                t.borrow()
+                                    .data
+                                    .get(&v)
+                                    .map(|x| x.clone())
+                                    .unwrap_or(Value::None),
+                            );
+                        }
+                        (Value::Array(a), Value::Integer(i)) => {
+                            let a = a.borrow();
+                            let Ok(i) = i.try_into() else {
+                                self.throw(RuntimeError::OverflowError {
+                                    required: "usize".to_owned(),
+                                    found: "i64".to_owned(),
+                                });
+                                break;
+                            };
+                            if i < 0 || i >= a.len() {
+                                self.throw(RuntimeError::IndexError {
+                                    index: i,
+                                    len: a.len(),
+                                });
+                            } else {
+                                self.stack.push(a[i].clone());
+                            }
+                        }
+                        (a, _) => {
+                            self.throw(RuntimeError::TypeError {
+                                expected: ValueType::Table,
+                                found: ValueType::from(&a),
+                                thrower: Some("Index"),
+                            });
+                        }
+                    }
+                }
+                OpCode::IndexAssign => {
+                    let val = self.stack.pop().expect("Stack underflow");
+                    let idx = self.stack.pop().expect("Stack underflow");
+                    let con = self.stack.pop().expect("Stack underflow");
+                    match (con, idx) {
+                        (Value::Table(t), v) => {
+                            let mut t = t.borrow_mut();
+                            if let Some(field) = t.data.get_mut(&v) {
+                                *field = val;
+                            } else {
+                                t.data.insert(v, val);
+                            }
+                        }
+                        (Value::Array(a), Value::Integer(i)) => {
+                            let mut a = a.borrow_mut();
+                            let Ok(i) = i.try_into() else {
+                                self.throw(RuntimeError::OverflowError {
+                                    required: "usize".to_owned(),
+                                    found: "i64".to_owned(),
+                                });
+                                break;
+                            };
+                            if i >= a.len() {
+                                self.throw(RuntimeError::IndexError {
+                                    index: i,
+                                    len: a.len(),
+                                });
+                            } else {
+                                a[i] = val;
+                            }
+                        }
+                        (con, _) => {
+                            self.throw(RuntimeError::TypeError {
+                                expected: ValueType::Table,
+                                found: ValueType::from(&con),
+                                thrower: Some("Index"),
+                            });
+                        }
+                    }
+                }
+                OpCode::Dup(count) => {
+                    let tmp = self
+                        .stack
+                        .get(self.stack.len() - *count..)
+                        .expect("stack underflow");
+                    let to_dup: Vec<_> = tmp.iter().map(|x| x.clone()).collect();
+                    self.stack.extend(to_dup);
+                }
+                OpCode::Swap2 => {
+                    let a = self.stack.pop().expect("stack underflow");
+                    let b = self.stack.pop().expect("stack underflow");
+                    self.stack.push(a);
+                    self.stack.push(b);
+                } //_ => panic!("{op:?}"),
             }
         }
         if let Some(error) = &self.to_throw {

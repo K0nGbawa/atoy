@@ -1,8 +1,11 @@
-use std::{io::Write, print, println};
+use std::{cell::RefCell, io::Write, print, println, rc::Rc};
 
 use atoy_macros::atoy_function;
 
-use crate::vm::{Args, RuntimeError, ValueType};
+use crate::{
+    parser::Table,
+    vm::{Args, RuntimeError, ValueType},
+};
 
 fn try_add_fn_info(error: RuntimeError, name: &'static str) -> RuntimeError {
     match error {
@@ -50,3 +53,7 @@ pub fn r#type(value: &crate::parser::Value) -> String {
     ValueType::from(value).to_string()
 }
 
+#[atoy_function]
+pub fn table() -> crate::parser::Value {
+    crate::parser::Value::Table(Rc::new(RefCell::new(Table::new())))
+}
