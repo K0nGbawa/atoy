@@ -1,8 +1,7 @@
 use atoy_macros::register_fns;
 
 use crate::{
-    builtin,
-    parser::{Func, OpCode, Value},
+    builtin, parser::{Func, OpCode, Table, Value},
 };
 use std::{
     cell::RefCell,
@@ -39,12 +38,12 @@ macro_rules! impl_try_from_value {
 }
 
 macro_rules! impl_try_from_value_no_overflow {
-    ($from_type:ident, $type:ident) => {
+    ($from_type:ident, $type:ty) => {
         impl TryFrom<&Value> for $type {
             type Error = RuntimeError;
             fn try_from(value: &Value) -> Result<Self, Self::Error> {
                 match value {
-                    Value::$from_type(n) => Ok($type::from(*n)),
+                    Value::$from_type(n) => Ok(<$type>::from(*n)),
                     _ => Err(RuntimeError::TypeError {
                         expected: ValueType::$from_type,
                         found: ValueType::from(value),
@@ -57,13 +56,32 @@ macro_rules! impl_try_from_value_no_overflow {
 }
 
 // 适用于，Rc<T>且T不是Copy
-macro_rules! impl_try_from_value_no_overflow_rc {
-    ($from_type:ident, $type:ident) => {
+macro_rules! impl_try_from_value_rc {
+    ($from_type:ident, $type:ty) => {
         impl TryFrom<&Value> for $type {
             type Error = RuntimeError;
             fn try_from(value: &Value) -> Result<Self, Self::Error> {
                 match value {
-                    Value::$from_type(n) => Ok($type::from(&**n)),
+                    Value::$from_type(n) => Ok(<$type>::from(&**n)),
+                    _ => Err(RuntimeError::TypeError {
+                        expected: ValueType::$from_type,
+                        found: ValueType::from(value),
+                        thrower: None,
+                    }),
+                }
+            }
+        }
+    };
+}
+
+macro_rules! impl_try_from_value_for_rc_refcell {
+    
+    ($from_type:ident, $type:ty) => {
+        impl TryFrom<&Value> for Rc<RefCell<$type>> {
+            type Error = RuntimeError;
+            fn try_from(value: &Value) -> Result<Self, Self::Error> {
+                match value {
+                    Value::$from_type(n) => Ok(n.clone()),
                     _ => Err(RuntimeError::TypeError {
                         expected: ValueType::$from_type,
                         found: ValueType::from(value),
@@ -89,7 +107,18 @@ impl_try_from_value!(Float, f64);
 // 不是为什么f32没有TryFrom<f64>
 // impl_try_from_value!(Float, f32);
 impl_try_from_value_no_overflow!(Bool, bool);
-impl_try_from_value_no_overflow_rc!(String, String);
+impl_try_from_value_rc!(String, String);
+
+impl_try_from_value_for_rc_refcell!(Array, Vec<Value>);
+impl_try_from_value_for_rc_refcell!(Table, Table);
+
+impl<T> From<T> for Value
+where T: Fn(Args) -> RuntimeResult<Value> + 'static
+{
+    fn from(value: T) -> Self {
+        Self::BuiltInFunc(Rc::new(value))
+    }
+}
 
 // 为所有能无损转为 i64 的整数类型实现 From
 macro_rules! impl_from_int_for_value {
@@ -112,11 +141,18 @@ impl From<String> for Value {
     }
 }
 
+impl From<&str> for Value {
+    fn from(value: &str) -> Self {
+        Self::String(Rc::new(value.to_owned()))
+    }
+}
+
 impl From<bool> for Value {
     fn from(value: bool) -> Self {
         Self::Bool(value)
     }
 }
+
 
 pub struct Args {
     pub values: Vec<Value>,
@@ -303,16 +339,28 @@ pub struct VM {
     // 可能被闭包函数捕获
     locals: Vec<Rc<RefCell<Env>>>,
     to_throw: Option<RuntimeError>,
+    arr_prototype: Table
 }
 
 impl VM {
     pub fn new(code: Vec<OpCode>) -> Self {
+        let mut arr_meta_raw = Table::new();
+        arr_meta_raw.data.insert(
+            Value::from("push"),
+            Value::from(builtin::wrapped_Array_push)
+        );
+        arr_meta_raw.data.insert(
+            Value::from("len"),
+            Value::from(builtin::wrapped_Array_len)
+        );
+        let arr_meta = arr_meta_raw;
         let mut instance = Self {
             stack: Vec::new(),
             code,
             globals: HashMap::new(),
             locals: Vec::new(),
             to_throw: None,
+            arr_prototype: arr_meta
         };
         register_fns!(
             &mut instance,
@@ -320,9 +368,17 @@ impl VM {
                 builtin::println,
                 builtin::input,
                 builtin::r#type,
-                builtin::table
+                builtin::Table,
+                builtin::Array,
+                builtin::getMetatableOf,
+                builtin::setMetatableOf,
+                builtin::clearMetatableOf,
+                builtin::getPrototypeOf,
+                builtin::setPrototypeOf,
+                builtin::clearPrototypeOf
             )
         );
+
         return instance;
     }
     pub fn register_func(&mut self, name: &str, func: Rc<dyn Fn(Args) -> RuntimeResult<Value>>) {
@@ -510,13 +566,21 @@ impl VM {
                                 });
                                 break;
                             };
-                            if i < 0 || i >= a.len() {
+                            if i > a.len() {
                                 self.throw(RuntimeError::IndexError {
                                     index: i,
                                     len: a.len(),
                                 });
                             } else {
                                 self.stack.push(a[i].clone());
+                            }
+                        }
+                        (Value::Array(a), k) => {
+                            let proto = &self.arr_prototype;
+                            if let Some(v) = proto.data.get(&k) {
+                                self.stack.push(v.clone());
+                            } else {
+                                self.stack.push(Value::None);
                             }
                         }
                         (a, _) => {
@@ -550,11 +614,13 @@ impl VM {
                                 });
                                 break;
                             };
-                            if i >= a.len() {
+                            if i > a.len() {
                                 self.throw(RuntimeError::IndexError {
                                     index: i,
                                     len: a.len(),
                                 });
+                            } else if i == a.len() {
+                                a.push(val);
                             } else {
                                 a[i] = val;
                             }

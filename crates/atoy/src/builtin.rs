@@ -1,9 +1,10 @@
+#![allow(non_snake_case)]
 use std::{cell::RefCell, io::Write, print, println, rc::Rc};
 
 use atoy_macros::atoy_function;
 
 use crate::{
-    parser::Table,
+    parser::{Table, Value},
     vm::{Args, RuntimeError, ValueType},
 };
 
@@ -54,6 +55,61 @@ pub fn r#type(value: &crate::parser::Value) -> String {
 }
 
 #[atoy_function]
-pub fn table() -> crate::parser::Value {
+pub fn Table() -> crate::parser::Value {
     crate::parser::Value::Table(Rc::new(RefCell::new(Table::new())))
+}
+
+#[atoy_function]
+pub fn Array() -> crate::parser::Value {
+    crate::parser::Value::Array(Rc::new(RefCell::new(Vec::new())))
+}
+
+#[atoy_function]
+pub fn Array_len(vector: Rc<RefCell<Vec<Value>>>) -> i64 {
+    vector.borrow().len() as i64
+} // 这里其实不安全，但是应该没人搞那么大的数组吧（
+
+#[atoy_function]
+pub fn Array_push(vector: Rc<RefCell<Vec<Value>>>, value: &Value) {
+    vector.borrow_mut().push(value.clone());
+}
+
+type RRTable = Rc<RefCell<Table>>;
+
+#[atoy_function]
+pub fn setPrototypeOf(target: RRTable, prototype: RRTable) {
+    target.borrow_mut().prototype = Some(prototype);
+}
+
+#[atoy_function]
+pub fn clearPrototypeOf(target: RRTable) {
+    target.borrow_mut().prototype = None;
+}
+
+#[atoy_function]
+pub fn getPrototypeOf(target: RRTable) -> Value {
+    if let Some(proto) = &target.borrow().prototype {
+        Value::Table(proto.clone())
+    } else {
+        Value::None
+    }
+}
+
+#[atoy_function]
+pub fn setMetatableOf(target: RRTable, meta: RRTable) {
+    target.borrow_mut().meta = Some(meta);
+}
+
+#[atoy_function]
+pub fn clearMetatableOf(target: RRTable) {
+    target.borrow_mut().meta = None;
+}
+
+#[atoy_function]
+pub fn getMetatableOf(target: RRTable) -> Value {
+    if let Some(meta) = &target.borrow().meta {
+        Value::Table(meta.clone())
+    } else {
+        Value::None
+    }
 }

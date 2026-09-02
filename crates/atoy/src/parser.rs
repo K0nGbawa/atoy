@@ -330,16 +330,16 @@ pub enum Value {
 
 pub struct Table {
     pub data: HashMap<Value, Value>,
-    pub prototype: Rc<RefCell<Option<Table>>>,
-    pub meta: Rc<RefCell<Option<Table>>>,
+    pub prototype: Option<Rc<RefCell<Table>>>,
+    pub meta: Option<Rc<RefCell<Table>>>,
 }
 
 impl Table {
     pub fn new() -> Table {
         Self {
             data: HashMap::new(),
-            prototype: Rc::new(RefCell::new(None)),
-            meta: Rc::new(RefCell::new(None)),
+            prototype: None,
+            meta: None,
         }
     }
 }

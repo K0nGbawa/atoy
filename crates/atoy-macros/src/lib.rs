@@ -33,6 +33,7 @@ pub fn atoy_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let params = collect_params(sig);
     let escaped_name = name.to_string().trim_start_matches("r#").to_string();
     let register_fn = format_ident!("__atoy_register_{}", name);
+    let wrapper_fn = format_ident!("wrapped_{}", name);
 
     // if inputs.is_empty() {
     //     let expanded = quote! {
@@ -147,12 +148,14 @@ pub fn atoy_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #(#attrs)*
         #vis #sig #block
 
+        pub fn #wrapper_fn(args: crate::vm::Args) -> crate::vm::RuntimeResult<crate::parser::Value> {
+            #ensure_length
+            #(#param_errors)*
+            #invoke
+        }
+
         pub fn #register_fn(vm: &mut crate::vm::VM) {
-            vm.register_func(#escaped_name, ::std::rc::Rc::new(|args: crate::vm::Args| -> crate::vm::RuntimeResult<crate::parser::Value> {
-                #ensure_length
-                #(#param_errors)*
-                #invoke
-            }));
+            vm.register_func(#escaped_name, ::std::rc::Rc::new(#wrapper_fn));
         }
     };
     TokenStream::from(expanded)
