@@ -1,12 +1,13 @@
 use atoy_macros::register_fns;
 
 use crate::{
-    builtin, parser::{Func, OpCode, Table, Value},
+    builtin,
+    parser::{Func, OpCode, Table, Value},
 };
 use std::{
     cell::RefCell,
     collections::hash_map::HashMap,
-    fmt::{Debug, Display, Formatter},
+    fmt::{Debug, Display, Formatter, write},
     ops::RangeInclusive,
     panic, println,
     rc::Rc,
@@ -75,7 +76,6 @@ macro_rules! impl_try_from_value_rc {
 }
 
 macro_rules! impl_try_from_value_for_rc_refcell {
-    
     ($from_type:ident, $type:ty) => {
         impl TryFrom<&Value> for Rc<RefCell<$type>> {
             type Error = RuntimeError;
@@ -113,7 +113,8 @@ impl_try_from_value_for_rc_refcell!(Array, Vec<Value>);
 impl_try_from_value_for_rc_refcell!(Table, Table);
 
 impl<T> From<T> for Value
-where T: Fn(Args) -> RuntimeResult<Value> + 'static
+where
+    T: Fn(Args) -> RuntimeResult<Value> + 'static,
 {
     fn from(value: T) -> Self {
         Self::BuiltInFunc(Rc::new(value))
@@ -152,7 +153,6 @@ impl From<bool> for Value {
         Self::Bool(value)
     }
 }
-
 
 pub struct Args {
     pub values: Vec<Value>,
@@ -217,6 +217,8 @@ pub enum ValueType {
     Set,
     Array,
     Table,
+    Union(Box<ValueType>, Vec<ValueType>),
+    Two(Box<ValueType>, Box<ValueType>),
     None,
 }
 
@@ -236,6 +238,15 @@ impl From<&Value> for ValueType {
     }
 }
 
+impl From<(&Value, &Value)> for ValueType {
+    fn from(value: (&Value, &Value)) -> Self {
+        Self::Two(
+            Box::new(value.0.into()), 
+            Box::new(value.1.into())
+        )
+    }
+}
+
 impl Display for ValueType {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
@@ -248,6 +259,13 @@ impl Display for ValueType {
             Self::Set => write!(f, "set"),
             Self::Array => write!(f, "array"),
             Self::Table => write!(f, "table"),
+            Self::Union(last, others) => {
+                for each in others {
+                    write!(f, "{} | ", each)?;
+                }
+                write!(f, "{}", last)
+            }
+            Self::Two(a, b) => write!(f, "({a}, {b})"),
         }
     }
 }
@@ -297,11 +315,20 @@ pub type RuntimeResult<T> = Result<T, RuntimeError>;
 macro_rules! gen_binop_closure {
     ($op:tt) => {
         |a, b| match (a, b) {
-            (Value::Integer(a), Value::Integer(b)) => Value::Integer(a $op b),
-            (Value::Float(a), Value::Float(b)) => Value::Float(a $op b),
-            (Value::Integer(a), Value::Float(b)) => Value::Float((a as f64) $op b),
-            (Value::Float(a), Value::Integer(b)) => Value::Float(a $op (b as f64)),
-            _ => panic!("Unsupport types")
+            (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a $op b)),
+            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a $op b)),
+            (Value::Integer(a), Value::Float(b)) => Ok(Value::Float((a as f64) $op b)),
+            (Value::Float(a), Value::Integer(b)) => Ok(Value::Float(a $op (b as f64))),
+            (a, b) => {
+                return Err(RuntimeError::TypeError {
+                    expected: ValueType::Two(
+                        Box::new(ValueType::Union(Box::new(ValueType::Float), vec![ValueType::Integer])),
+                        Box::new(ValueType::Union(Box::new(ValueType::Float), vec![ValueType::Integer]))
+                    ),
+                    found: ValueType::from((&a, &b)),
+                    thrower: None
+                })
+            }
         }
     };
 }
@@ -309,11 +336,20 @@ macro_rules! gen_binop_closure {
 macro_rules! gen_cmpop_closure {
     ($op:tt) => {
         |a, b| match (a, b) {
-            (Value::Integer(a), Value::Integer(b)) => Value::Bool(a $op b),
-            (Value::Float(a), Value::Float(b)) => Value::Bool(a $op b),
-            (Value::Integer(a), Value::Float(b)) => Value::Bool((a as f64) $op b),
-            (Value::Float(a), Value::Integer(b)) => Value::Bool(a $op (b as f64)),
-            _ => panic!("Unsupport types")
+            (Value::Integer(a), Value::Integer(b)) => Ok(Value::Bool(a $op b)),
+            (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a $op b)),
+            (Value::Integer(a), Value::Float(b)) => Ok(Value::Bool((a as f64) $op b)),
+            (Value::Float(a), Value::Integer(b)) => Ok(Value::Bool(a $op (b as f64))),
+            (a, b) => {
+                return Err(RuntimeError::TypeError {
+                    expected: ValueType::Two(
+                        Box::new(ValueType::Union(Box::new(ValueType::Float), vec![ValueType::Integer])),
+                        Box::new(ValueType::Union(Box::new(ValueType::Float), vec![ValueType::Integer]))
+                    ),
+                    found: ValueType::from((&a, &b)),
+                    thrower: None
+                })
+            }
         }
     };
 }
@@ -339,7 +375,7 @@ pub struct VM {
     // 可能被闭包函数捕获
     locals: Vec<Rc<RefCell<Env>>>,
     to_throw: Option<RuntimeError>,
-    arr_prototype: Table
+    arr_prototype: Table,
 }
 
 impl VM {
@@ -347,12 +383,11 @@ impl VM {
         let mut arr_meta_raw = Table::new();
         arr_meta_raw.data.insert(
             Value::from("push"),
-            Value::from(builtin::wrapped_Array_push)
+            Value::from(builtin::wrapped_Array_push),
         );
-        arr_meta_raw.data.insert(
-            Value::from("len"),
-            Value::from(builtin::wrapped_Array_len)
-        );
+        arr_meta_raw
+            .data
+            .insert(Value::from("len"), Value::from(builtin::wrapped_Array_len));
         let arr_meta = arr_meta_raw;
         let mut instance = Self {
             stack: Vec::new(),
@@ -360,12 +395,13 @@ impl VM {
             globals: HashMap::new(),
             locals: Vec::new(),
             to_throw: None,
-            arr_prototype: arr_meta
+            arr_prototype: arr_meta,
         };
         register_fns!(
             &mut instance,
             (
                 builtin::println,
+                builtin::repr,
                 builtin::input,
                 builtin::r#type,
                 builtin::Table,
@@ -592,10 +628,14 @@ impl VM {
                         }
                     }
                 }
-                OpCode::IndexAssign => {
+                OpCode::IndexAssign(preserves_container) => {
                     let val = self.stack.pop().expect("Stack underflow");
                     let idx = self.stack.pop().expect("Stack underflow");
-                    let con = self.stack.pop().expect("Stack underflow");
+                    let con = if *preserves_container {
+                        self.stack.last().expect("Stack underflow").clone()
+                    } else {
+                        self.stack.pop().expect("Stack underflow")
+                    };
                     match (con, idx) {
                         (Value::Table(t), v) => {
                             let mut t = t.borrow_mut();
@@ -647,6 +687,19 @@ impl VM {
                     let b = self.stack.pop().expect("stack underflow");
                     self.stack.push(a);
                     self.stack.push(b);
+                }
+                OpCode::NewArray(size) => {
+                    let arr;
+                    if self.stack.len() < *size {
+                        panic!("stack underflow");
+                    } else {
+                        arr = self.stack.split_off(self.stack.len() - *size);
+                    }
+                    self.stack.push(Value::Array(Rc::new(RefCell::new(arr))));
+                }
+                OpCode::NewTable => {
+                    self.stack
+                        .push(Value::Table(Rc::new(RefCell::new(Table::new()))));
                 } //_ => panic!("{op:?}"),
             }
         }
@@ -670,11 +723,14 @@ impl VM {
 
     fn binary_op<F>(&mut self, op: F)
     where
-        F: FnOnce(Value, Value) -> Value,
+        F: FnOnce(Value, Value) -> RuntimeResult<Value>,
     {
         let b = self.stack.pop().expect("Stack underflow");
         let a = self.stack.pop().expect("Stack underflow");
-        self.stack.push(op(a, b));
+        match op(a, b) {
+            Ok(r) => self.stack.push(r),
+            Err(e) => self.throw(e),
+        }
     }
 }
 

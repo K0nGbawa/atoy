@@ -1,5 +1,5 @@
 #![allow(non_snake_case)]
-use std::{cell::RefCell, io::Write, print, println, rc::Rc};
+use std::{cell::RefCell, collections::{HashMap, HashSet}, format, io::Write, print, println, rc::Rc};
 
 use atoy_macros::atoy_function;
 
@@ -49,8 +49,33 @@ pub fn input(prompt: Option<String>) -> String {
     s
 }
 
+
+pub fn repr_inner(value: &Value, seen: &mut HashMap<Value, usize>) -> String {
+    let len = seen.len();
+    if let Some(id) = seen.get(value) {
+        return format!("<Circular#{}>", id)
+    } else {
+        seen.insert(value.clone(), len);
+    }
+    match value {
+        Value::Array(rc) => {
+            format!("Array#{len} [{}]",  rc.borrow().iter().map(|e| repr_inner(e, seen)).collect::<Vec<_>>().join(", "))
+        }
+        Value::Table(rc) => {
+            format!("Table#{len} {{{}}}", rc.borrow().data.iter().map(|(k, v)| format!("[{}]: {}", k, repr_inner(v, seen))).collect::<Vec<_>>().join(", "))
+        }
+        other => format!("{}", other)
+    }
+}
+
 #[atoy_function]
-pub fn r#type(value: &crate::parser::Value) -> String {
+pub fn repr(value: &Value) -> String {
+    let mut seen = HashMap::new();
+    repr_inner(value, &mut seen)
+}
+
+#[atoy_function]
+pub fn r#type(value: &Value) -> String {
     ValueType::from(value).to_string()
 }
 

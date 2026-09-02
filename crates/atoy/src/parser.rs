@@ -11,8 +11,7 @@ use std::{
 use thiserror::Error;
 
 use crate::{
-    lexer::Token,
-    vm::{Args, Env},
+    builtin::repr, lexer::Token, vm::{Args, Env},
 };
 
 #[derive(Debug, Error)]
@@ -214,6 +213,8 @@ pub enum Expr {
     Call(Box<Expr>, Vec<Expr>),
     Index(Box<Expr>, Box<Expr>),
     Member(Box<Expr>, String),
+    Array(Vec<Expr>),
+    Table(Vec<(Expr, Expr)>)
 }
 
 fn join<T: Display>(vec: &Vec<T>, sep: &str) -> String {
@@ -243,6 +244,8 @@ impl Display for Expr {
             Expr::Call(func, args) => write!(f, "{}({})", func, join(args, ", ")),
             Expr::Index(expr, index) => write!(f, "{}[{}]", expr, index),
             Expr::Member(expr, member) => write!(f, "{}.{}", expr, member),
+            Expr::Array(exprs) => write!(f, "[{}]", join(exprs, ", ")),
+            Expr::Table(entries) => write!(f, "{{{}}}", entries.iter().map(|(k, v)| format!("[{}]: {}", k, v)).collect::<Vec<_>>().join(", "))
         }
     }
 }
@@ -277,10 +280,12 @@ pub enum OpCode {
     And(usize),
     Or(usize),
     Index,
-    IndexAssign,
+    IndexAssign(bool),
     Concat,
     Dup(usize),
     Swap2,
+    NewArray(usize),
+    NewTable
 }
 
 #[derive(Debug)]
@@ -378,16 +383,8 @@ impl Value {
     }
     pub fn to_string(&self) -> String {
         match self {
-            Value::Integer(i) => i.to_string(),
-            Value::Float(f) => f.to_string(),
-            Value::Bool(bo) => bo.to_string(),
-            Value::BuiltInFunc(rc) => format!("Builtin Function at {:p}", *rc),
-            Value::Func(rc) => format!("Function at {:p}", *rc),
             Value::String(string) => (**string).clone(),
-            Value::Table(table) => format!("Table at {:p}", *table),
-            Value::Array(array) => format!("Array at {:p}", *array),
-            Value::Set(set) => format!("Set at {:p}", *set),
-            Value::None => "None".to_string(),
+            other => repr(other)
         }
     }
 }
@@ -402,6 +399,9 @@ impl PartialEq for Value {
             (BuiltInFunc(n1), BuiltInFunc(n2)) => Rc::ptr_eq(n1, n2),
             (Func(n1), Func(n2)) => Rc::ptr_eq(n1, n2),
             (String(n1), String(n2)) => n1 == n2,
+            (Table(n1), Table(n2)) => Rc::ptr_eq(n1, n2),
+            (Array(n1), Array(n2)) => Rc::ptr_eq(n1, n2),
+            (Set(n1), Set(n2)) => Rc::ptr_eq(n1, n2),
             (None, None) => true,
             (_, _) => false,
         }
@@ -892,6 +892,48 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Bool(false))
             }
+            Token::LBracket => {
+                self.advance();
+                let mut items = Vec::new();
+                while *self.peek() != Token::RBracket && *self.peek() != Token::Eof {
+                    let item = self.parse_expr()?;
+                    items.push(item);
+                    if *self.peek() == Token::Comma {
+                        self.advance();
+                    }
+                }
+                self.expect(Token::RBracket)?;
+                Ok(Expr::Array(items))
+            }
+            Token::LBrace => {
+                self.advance();
+                let mut items = Vec::new();
+                while *self.peek() != Token::RBrace && *self.peek() != Token::Eof {
+                    match self.advance() {
+                        Token::LBracket => {
+                            let key = self.parse_expr()?;
+                            self.expect(Token::RBracket)?;
+                            self.expect(Token::Colon)?;
+                            let val = self.parse_expr()?;
+                            items.push((key, val));
+                        }
+                        Token::Ident(s) => {
+                            let key = Expr::String(s.clone());
+                            self.expect(Token::Colon)?;
+                            let val = self.parse_expr()?;
+                            items.push((key, val));
+                        },
+                        token => {
+                            return Err(ParseError::UnexpectedToken(token.to_string()));
+                        }
+                    }
+                    if *self.peek() == Token::Comma {
+                        self.advance();
+                    }
+                }
+                self.expect(Token::RBrace)?;
+                Ok(Expr::Table(items))
+            }
             other => {
                 if matches!(other, Token::Eof) {
                     Err(ParseError::UnexpectedEof)
@@ -1065,7 +1107,7 @@ impl Compiler {
         } else {
             self.compile_expr(value);
         }
-        self.push(OpCode::IndexAssign);
+        self.push(OpCode::IndexAssign(false));
     }
 
     fn compile_block(&mut self, stmts: &Vec<Stmt>) {
@@ -1232,6 +1274,20 @@ impl Compiler {
                     self.compile_expr(arg);
                 }
                 self.push(OpCode::Call(args.len() + 1));
+            }
+            Expr::Array(elements) => {
+                for element in elements {
+                    self.compile_expr(element);
+                }
+                self.push(OpCode::NewArray(elements.len()));
+            }
+            Expr::Table(pairs) => {
+                self.push(OpCode::NewTable);
+                for (key, value) in pairs {
+                    self.compile_expr(key);
+                    self.compile_expr(value);
+                    self.push(OpCode::IndexAssign(true));
+                }
             }
         }
     }
