@@ -3,7 +3,9 @@ use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
     hash::Hash,
-    matches, println,
+    matches,
+    ops::Deref,
+    println,
     rc::Rc,
     unreachable, write,
 };
@@ -11,7 +13,9 @@ use std::{
 use thiserror::Error;
 
 use crate::{
-    builtin::repr, lexer::Token, vm::{Args, Env},
+    builtin::repr,
+    lexer::Token,
+    vm::{Args, Env},
 };
 
 #[derive(Debug, Error)]
@@ -208,13 +212,17 @@ pub enum Expr {
         left: Box<Expr>,
         right: Box<Expr>,
     },
+    ConcatOp {
+        left: Box<Expr>,
+        right: Box<Expr>,
+    },
     Unary(UnaryOp, Box<Expr>),
     MethodCall(Box<Expr>, String, Vec<Expr>),
     Call(Box<Expr>, Vec<Expr>),
     Index(Box<Expr>, Box<Expr>),
     Member(Box<Expr>, String),
     Array(Vec<Expr>),
-    Table(Vec<(Expr, Expr)>)
+    Table(Vec<(Expr, Expr)>),
 }
 
 fn join<T: Display>(vec: &Vec<T>, sep: &str) -> String {
@@ -237,6 +245,7 @@ impl Display for Expr {
             Expr::CompareOp { left, op, right } => write!(f, "({} {} {})", left, op, right),
             Expr::AndOp { left, right } => write!(f, "({} and {})", left, right),
             Expr::OrOp { left, right } => write!(f, "({} or {})", left, right),
+            Expr::ConcatOp { left, right } => write!(f, "({} .. {})", left, right),
             Expr::Unary(op, expr) => write!(f, "({}{})", op, expr),
             Expr::MethodCall(obj, method, args) => {
                 write!(f, "{}.{}({})", obj, method, join(args, ", "))
@@ -245,7 +254,15 @@ impl Display for Expr {
             Expr::Index(expr, index) => write!(f, "{}[{}]", expr, index),
             Expr::Member(expr, member) => write!(f, "{}.{}", expr, member),
             Expr::Array(exprs) => write!(f, "[{}]", join(exprs, ", ")),
-            Expr::Table(entries) => write!(f, "{{{}}}", entries.iter().map(|(k, v)| format!("[{}]: {}", k, v)).collect::<Vec<_>>().join(", "))
+            Expr::Table(entries) => write!(
+                f,
+                "{{{}}}",
+                entries
+                    .iter()
+                    .map(|(k, v)| format!("[{}]: {}", k, v))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         }
     }
 }
@@ -285,7 +302,7 @@ pub enum OpCode {
     Dup(usize),
     Swap2,
     NewArray(usize),
-    NewTable
+    NewTable,
 }
 
 #[derive(Debug)]
@@ -384,7 +401,7 @@ impl Value {
     pub fn to_string(&self) -> String {
         match self {
             Value::String(string) => (**string).clone(),
-            other => repr(other)
+            other => repr(other),
         }
     }
 }
@@ -454,8 +471,8 @@ impl Display for Value {
             Float(n) => write!(f, "{n}"),
             Integer(n) => write!(f, "{n}"),
             Bool(n) => write!(f, "{n}"),
-            BuiltInFunc(func) => write!(f, "Builtin Function at {:p}", *func),
-            Func(func) => write!(f, "Function at {:p}", *func),
+            BuiltInFunc(func) => write!(f, "Builtin Function at {:p}", func),
+            Func(func) => write!(f, "Function at {:p}", func),
             String(s) => write!(f, "\"{}\"", s.escape_debug()),
             Table(table) => write!(f, "Table at {:p}", *table),
             Array(array) => write!(
@@ -692,7 +709,7 @@ impl Parser {
         if self.peek().clone() == Token::Fn {
             self.parse_fn()
         } else {
-            self.parse_or_op()
+            self.parse_concat_op()
         }
     }
 
@@ -715,6 +732,16 @@ impl Parser {
         let block = self.parse_block()?;
         self.in_func -= 1;
         Ok(Expr::Fn(args, Box::new(block)))
+    }
+
+    fn parse_concat_op(&mut self) -> ParseResult<Expr> {
+        let mut left = self.parse_or_op()?;
+        while *self.peek() == Token::Concat {
+            self.advance();
+            let right = self.parse_or_op()?;
+            left = Expr::ConcatOp { left: Box::new(left), right: Box::new(right) };
+        }
+        Ok(left)
     }
 
     fn parse_or_op(&mut self) -> ParseResult<Expr> {
@@ -922,7 +949,7 @@ impl Parser {
                             self.expect(Token::Colon)?;
                             let val = self.parse_expr()?;
                             items.push((key, val));
-                        },
+                        }
                         token => {
                             return Err(ParseError::UnexpectedToken(token.to_string()));
                         }
@@ -1288,6 +1315,11 @@ impl Compiler {
                     self.compile_expr(value);
                     self.push(OpCode::IndexAssign(true));
                 }
+            }
+            Expr::ConcatOp { left, right } => {
+                self.compile_expr(left);
+                self.compile_expr(right);
+                self.push(OpCode::Concat);
             }
         }
     }

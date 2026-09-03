@@ -1,7 +1,8 @@
-use atoy_macros::register_fns;
+use atoy_macros::{register_fns, register_methods};
 
 use crate::{
-    builtin::{self, index, repr}, parser::{Func, OpCode, Table, Value},
+    builtin::{self, index, repr},
+    parser::{Func, OpCode, Table, Value},
 };
 use std::{
     cell::RefCell,
@@ -239,10 +240,7 @@ impl From<&Value> for ValueType {
 
 impl From<(&Value, &Value)> for ValueType {
     fn from(value: (&Value, &Value)) -> Self {
-        Self::Two(
-            Box::new(value.0.into()), 
-            Box::new(value.1.into())
-        )
+        Self::Two(Box::new(value.0.into()), Box::new(value.1.into()))
     }
 }
 
@@ -308,10 +306,7 @@ pub enum RuntimeError {
     #[error("IndexError: Index {index} out of bounds for length {len}")]
     IndexError { index: usize, len: usize },
     #[error("OperatorNotSupportedError: Operator `{op}` is not supported for `{r}`", r = repr(table))]
-    OperatorNotSupportedError {
-        op: String,
-        table: Value
-    }
+    OperatorNotSupportedError { op: String, table: Value },
 }
 
 pub type RuntimeResult<T> = Result<T, RuntimeError>;
@@ -358,6 +353,54 @@ macro_rules! gen_cmpop {
     };
 }
 
+macro_rules! gen_concatop {
+    ($a: expr, $b: expr, $op:tt) => {{
+        match (&$a, &$b) { // 这里下面要重新来一波细粒度匹配，不能直接消费两个Value，所以写成引用
+            (
+                Value::Integer(_) | Value::Float(_) | Value::String(_) | Value::Bool(_) | Value::None,
+                Value::Integer(_) | Value::Float(_) | Value::String(_) | Value::Bool(_) | Value::None) => {
+                let a = match $a {
+                    Value::Integer(i) => i.to_string(),
+                    Value::Float(f) => f.to_string(),
+                    Value::String(s) => (*s).clone(),
+                    Value::Bool(b) => b.to_string(),
+                    Value::None => "None".to_owned(),
+                    _ => unreachable!()
+                };
+                let b = match $b {
+                    Value::Integer(i) => &i.to_string(),
+                    Value::Float(f) => &f.to_string(),
+                    Value::String(s) => &(*s).clone(),
+                    Value::Bool(b) => &b.to_string(),
+                    Value::None => "None",
+                    _ => unreachable!()
+                };
+                Ok(Value::String(Rc::new(a + b)))
+            }
+            (a, b) => {
+                Err(RuntimeError::TypeError {
+                    expected: ValueType::Two(
+                        Box::new(
+                            ValueType::Union(
+                                Box::new(ValueType::None),
+                                vec![ValueType::Integer, ValueType::Float, ValueType::String, ValueType::Bool]
+                            )
+                        ),
+                        Box::new(
+                            ValueType::Union(
+                                Box::new(ValueType::None),
+                                vec![ValueType::Integer, ValueType::Float, ValueType::String, ValueType::Bool]
+                            )
+                        ),
+                    ),
+                    found: ValueType::from((a, b)),
+                    thrower: None
+                })
+            }
+        }
+    }};
+}
+
 macro_rules! gen_binop {
     ($vm: expr, $macro: ident, $magic_method: literal, $op:tt) => {{
         let b = $vm.stack.pop().expect("stack underflow");
@@ -388,7 +431,7 @@ macro_rules! gen_binop {
                             $vm.throw(RuntimeError::TypeError {
                                 expected: ValueType::Function,
                                 found: ValueType::from(&func),
-                                thrower: Some(concat!("table.[[metatable]].", $magic_method))
+                                thrower: Some(concat!("table.[[metatable]].", $magic_method)),
                             });
                             break;
                         }
@@ -396,14 +439,14 @@ macro_rules! gen_binop {
                 } else {
                     $vm.throw(RuntimeError::OperatorNotSupportedError {
                         op: stringify!($op).to_owned(),
-                        table: a.clone()
+                        table: a.clone(),
                     });
                     break;
                 }
             } else {
                 $vm.throw(RuntimeError::OperatorNotSupportedError {
                     op: stringify!($op).to_owned(),
-                    table: a.clone()
+                    table: a.clone(),
                 });
                 break;
             }
@@ -429,7 +472,8 @@ impl Env {
         Self { vars: Vec::new() }
     }
     fn get_or_new_var(&mut self, idx: usize) -> &mut Value {
-        if idx >= self.vars.len() { // 这里之前不知道resize也可能缩小Vec，警钟撅烂）
+        if idx >= self.vars.len() {
+            // 这里之前不知道resize也可能缩小Vec，警钟撅烂）
             self.vars.resize(idx + 1, Value::None);
         }
         self.vars.get_mut(idx).unwrap()
@@ -442,28 +486,55 @@ pub struct VM {
     // 可能被闭包函数捕获
     locals: Vec<Rc<RefCell<Env>>>,
     to_throw: Option<RuntimeError>,
-    arr_prototype: Table,
+    array_prototype: Rc<RefCell<Table>>,
+    string_prototype: Rc<RefCell<Table>>,
 }
 
 impl VM {
     pub fn new(code: Vec<OpCode>) -> Self {
         let mut arr_meta_raw = Table::new();
-        arr_meta_raw.data.insert(
-            Value::from("push"),
-            Value::from(builtin::wrapped_Array_push),
+        let mut str_meta_raw = Table::new();
+
+        register_methods!(
+            &mut str_meta_raw,
+            (
+                builtin::String_len,
+                builtin::String_toInteger,
+                builtin::String_upper,
+                builtin::String_lower,
+                builtin::String_from
+            )
         );
-        arr_meta_raw
-            .data
-            .insert(Value::from("len"), Value::from(builtin::wrapped_Array_len));
-        let arr_meta = arr_meta_raw;
+
+        register_methods!(
+            &mut arr_meta_raw,
+            (
+                builtin::Array_len,
+                builtin::Array_push,
+                builtin::Array_pop,
+                builtin::Array_new
+            )
+        );
+
         let mut instance = Self {
             stack: Vec::new(),
             code,
             globals: HashMap::new(),
             locals: Vec::new(),
             to_throw: None,
-            arr_prototype: arr_meta,
+            array_prototype: Rc::new(RefCell::new(arr_meta_raw)),
+            string_prototype: Rc::new(RefCell::new(str_meta_raw)),
         };
+
+        instance.globals.insert(
+            String::from("Array"),
+            Value::Table(instance.array_prototype.clone()),
+        );
+        instance.globals.insert(
+            String::from("String"),
+            Value::Table(instance.string_prototype.clone()),
+        );
+
         register_fns!(
             &mut instance,
             (
@@ -472,7 +543,6 @@ impl VM {
                 builtin::input,
                 builtin::r#type,
                 builtin::Table,
-                builtin::Array,
                 builtin::getMetatableOf,
                 builtin::setMetatableOf,
                 builtin::clearMetatableOf,
@@ -498,11 +568,25 @@ impl VM {
             }
             let op = &codes.unwrap_or(&self.code)[ip];
             ip += 1;
-            println!("|\t\t\t\t\t栈\t[{}]", self.stack.iter().map(|v| repr(v)).collect::<Vec<_>>().join(", "));
+            println!(
+                "|\t\t\t\t\t栈\t[{}]",
+                self.stack
+                    .iter()
+                    .map(|v| repr(v))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
             {
                 if let Some(l) = self.locals.last() {
-                    
-                    println!("|\t\t\t\t\t局部\t[{}]", l.borrow().vars.iter().map(|v| repr(v)).collect::<Vec<_>>().join(", "));
+                    println!(
+                        "|\t\t\t\t\t局部\t[{}]",
+                        l.borrow()
+                            .vars
+                            .iter()
+                            .map(|v| repr(v))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
                 }
             }
             println!("| {} {:?}", ip, op);
@@ -534,6 +618,7 @@ impl VM {
                 OpCode::Lt => gen_binop!(self, gen_cmpop, "lt", <),
                 OpCode::Gte => gen_binop!(self, gen_cmpop, "gte", >=),
                 OpCode::Lte => gen_binop!(self, gen_cmpop, "lte", <=),
+                OpCode::Concat => gen_binop!(self, gen_concatop, "concat", +),
                 OpCode::And(idx) => {
                     let v = self.stack.last().expect("Stack underflow");
                     if v.is_truthy() {
@@ -593,17 +678,15 @@ impl VM {
                             };
                             self.stack.push(ret);
                         }
-                        Value::Func(func) => {
-                            match self.call(&func, &args) {
-                                Ok(v) => {
-                                    self.stack.push(v);
-                                }
-                                Err(e) => {
-                                    self.throw(e);
-                                    break;
-                                }
+                        Value::Func(func) => match self.call(&func, &args) {
+                            Ok(v) => {
+                                self.stack.push(v);
                             }
-                        }
+                            Err(e) => {
+                                self.throw(e);
+                                break;
+                            }
+                        },
                         _ => {
                             self.throw(RuntimeError::TypeError {
                                 expected: ValueType::Function,
@@ -637,20 +720,12 @@ impl VM {
                     self.locals.pop();
                     return self.stack.pop();
                 }
-                OpCode::Concat => {
-                    let b = self.stack.pop().expect("Stack underflow");
-                    let a = self.stack.pop().expect("Stack underflow");
-                    self.stack
-                        .push(Value::String(Rc::new(format!("{}{}", a, b))));
-                }
                 OpCode::Index => {
                     let b = self.stack.pop().expect("Stack underflow");
                     let a = self.stack.pop().expect("Stack underflow");
                     match (a, b) {
                         (Value::Table(t), v) => {
-                            self.stack.push(
-                                index(t, &v)
-                            );
+                            self.stack.push(index(t, &v));
                         }
                         (Value::Array(a), Value::Integer(i)) => {
                             let a = a.borrow();
@@ -671,7 +746,15 @@ impl VM {
                             }
                         }
                         (Value::Array(_a), k) => {
-                            let proto = &self.arr_prototype;
+                            let proto = self.array_prototype.borrow();
+                            if let Some(v) = proto.data.get(&k) {
+                                self.stack.push(v.clone());
+                            } else {
+                                self.stack.push(Value::None);
+                            }
+                        }
+                        (Value::String(_a), k) => {
+                            let proto = self.string_prototype.borrow();
                             if let Some(v) = proto.data.get(&k) {
                                 self.stack.push(v.clone());
                             } else {
@@ -801,7 +884,6 @@ impl VM {
         self.stack = tmp;
         Ok(ret_val)
     }
-
 }
 
 #[cfg(test)]
