@@ -568,28 +568,28 @@ impl VM {
             }
             let op = &codes.unwrap_or(&self.code)[ip];
             ip += 1;
-            println!(
-                "|\t\t\t\t\t栈\t[{}]",
-                self.stack
-                    .iter()
-                    .map(|v| repr(v))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-            {
-                if let Some(l) = self.locals.last() {
-                    println!(
-                        "|\t\t\t\t\t局部\t[{}]",
-                        l.borrow()
-                            .vars
-                            .iter()
-                            .map(|v| repr(v))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    );
-                }
-            }
-            println!("| {} {:?}", ip, op);
+            // println!(
+            //     "|\t\t\t\t\t栈\t[{}]",
+            //     self.stack
+            //         .iter()
+            //         .map(|v| repr(v))
+            //         .collect::<Vec<_>>()
+            //         .join(", ")
+            // );
+            // {
+            //     if let Some(l) = self.locals.last() {
+            //         println!(
+            //             "|\t\t\t\t\t局部\t[{}]",
+            //             l.borrow()
+            //                 .vars
+            //                 .iter()
+            //                 .map(|v| repr(v))
+            //                 .collect::<Vec<_>>()
+            //                 .join(", ")
+            //         );
+            //     }
+            // }
+            // println!("| {} {:?}", ip, op);
             match op {
                 OpCode::Push(value) => self.stack.push(value.clone()),
                 OpCode::Add => gen_binop!(self, gen_arithop, "add", +),
