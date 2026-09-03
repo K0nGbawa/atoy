@@ -1,13 +1,12 @@
 use atoy_macros::register_fns;
 
 use crate::{
-    builtin,
-    parser::{Func, OpCode, Table, Value},
+    builtin::{self, index, repr}, parser::{Func, OpCode, Table, Value},
 };
 use std::{
     cell::RefCell,
     collections::hash_map::HashMap,
-    fmt::{Debug, Display, Formatter, write},
+    fmt::{Debug, Display, Formatter},
     ops::RangeInclusive,
     panic, println,
     rc::Rc,
@@ -308,19 +307,24 @@ pub enum RuntimeError {
     OverflowError { required: String, found: String },
     #[error("IndexError: Index {index} out of bounds for length {len}")]
     IndexError { index: usize, len: usize },
+    #[error("OperatorNotSupportedError: Operator `{op}` is not supported for `{r}`", r = repr(table))]
+    OperatorNotSupportedError {
+        op: String,
+        table: Value
+    }
 }
 
 pub type RuntimeResult<T> = Result<T, RuntimeError>;
 
-macro_rules! gen_binop_closure {
-    ($op:tt) => {
-        |a, b| match (a, b) {
+macro_rules! gen_arithop {
+    ($a: expr, $b: expr, $op:tt) => {
+        match ($a, $b) {
             (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a $op b)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a $op b)),
             (Value::Integer(a), Value::Float(b)) => Ok(Value::Float((a as f64) $op b)),
             (Value::Float(a), Value::Integer(b)) => Ok(Value::Float(a $op (b as f64))),
             (a, b) => {
-                return Err(RuntimeError::TypeError {
+                Err(RuntimeError::TypeError {
                     expected: ValueType::Two(
                         Box::new(ValueType::Union(Box::new(ValueType::Float), vec![ValueType::Integer])),
                         Box::new(ValueType::Union(Box::new(ValueType::Float), vec![ValueType::Integer]))
@@ -333,15 +337,15 @@ macro_rules! gen_binop_closure {
     };
 }
 
-macro_rules! gen_cmpop_closure {
-    ($op:tt) => {
-        |a, b| match (a, b) {
+macro_rules! gen_cmpop {
+    ($a: expr, $b: expr, $op:tt) => {
+        match ($a, $b) {
             (Value::Integer(a), Value::Integer(b)) => Ok(Value::Bool(a $op b)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a $op b)),
             (Value::Integer(a), Value::Float(b)) => Ok(Value::Bool((a as f64) $op b)),
             (Value::Float(a), Value::Integer(b)) => Ok(Value::Bool(a $op (b as f64))),
             (a, b) => {
-                return Err(RuntimeError::TypeError {
+                Err(RuntimeError::TypeError {
                     expected: ValueType::Two(
                         Box::new(ValueType::Union(Box::new(ValueType::Float), vec![ValueType::Integer])),
                         Box::new(ValueType::Union(Box::new(ValueType::Float), vec![ValueType::Integer]))
@@ -352,6 +356,67 @@ macro_rules! gen_cmpop_closure {
             }
         }
     };
+}
+
+macro_rules! gen_binop {
+    ($vm: expr, $macro: ident, $magic_method: literal, $op:tt) => {{
+        let b = $vm.stack.pop().expect("stack underflow");
+        let a = $vm.stack.pop().expect("stack underflow");
+        if let Value::Table(t) = &a {
+            if let Some(meta) = &t.borrow().meta {
+                let func = index(meta.clone(), &Value::from($magic_method));
+                if func != Value::None {
+                    match func {
+                        Value::Func(func) => {
+                            match $vm.call(&func, &vec![a.clone(), b]) {
+                                Ok(ret) => $vm.stack.push(ret),
+                                Err(e) => {
+                                    $vm.throw(e);
+                                }
+                            };
+                        }
+                        Value::BuiltInFunc(func) => {
+                            match func(Args::new(vec![a.clone(), b])) {
+                                Ok(ret) => $vm.stack.push(ret),
+                                Err(e) => {
+                                    $vm.throw(e);
+                                    break;
+                                }
+                            };
+                        }
+                        _ => {
+                            $vm.throw(RuntimeError::TypeError {
+                                expected: ValueType::Function,
+                                found: ValueType::from(&func),
+                                thrower: Some(concat!("table.[[metatable]].", $magic_method))
+                            });
+                            break;
+                        }
+                    }
+                } else {
+                    $vm.throw(RuntimeError::OperatorNotSupportedError {
+                        op: stringify!($op).to_owned(),
+                        table: a.clone()
+                    });
+                    break;
+                }
+            } else {
+                $vm.throw(RuntimeError::OperatorNotSupportedError {
+                    op: stringify!($op).to_owned(),
+                    table: a.clone()
+                });
+                break;
+            }
+        } else {
+            match $macro!(a, b, $op) {
+                Ok(v) => $vm.stack.push(v),
+                Err(e) => {
+                    $vm.throw(e);
+                    break;
+                }
+            }
+        };
+    }};
 }
 
 #[derive(Debug)]
@@ -364,7 +429,9 @@ impl Env {
         Self { vars: Vec::new() }
     }
     fn get_or_new_var(&mut self, idx: usize) -> &mut Value {
-        self.vars.resize(idx + 1, Value::None);
+        if idx >= self.vars.len() { // 这里之前不知道resize也可能缩小Vec，警钟撅烂）
+            self.vars.resize(idx + 1, Value::None);
+        }
         self.vars.get_mut(idx).unwrap()
     }
 }
@@ -431,13 +498,20 @@ impl VM {
             }
             let op = &codes.unwrap_or(&self.code)[ip];
             ip += 1;
-            // println!("{} {:?}", ip, op);
+            println!("|\t\t\t\t\t栈\t[{}]", self.stack.iter().map(|v| repr(v)).collect::<Vec<_>>().join(", "));
+            {
+                if let Some(l) = self.locals.last() {
+                    
+                    println!("|\t\t\t\t\t局部\t[{}]", l.borrow().vars.iter().map(|v| repr(v)).collect::<Vec<_>>().join(", "));
+                }
+            }
+            println!("| {} {:?}", ip, op);
             match op {
                 OpCode::Push(value) => self.stack.push(value.clone()),
-                OpCode::Add => self.binary_op(gen_binop_closure!(+)),
-                OpCode::Sub => self.binary_op(gen_binop_closure!(-)),
-                OpCode::Mul => self.binary_op(gen_binop_closure!(*)),
-                OpCode::Div => self.binary_op(gen_binop_closure!(/)),
+                OpCode::Add => gen_binop!(self, gen_arithop, "add", +),
+                OpCode::Sub => gen_binop!(self, gen_arithop, "sub", -),
+                OpCode::Mul => gen_binop!(self, gen_arithop, "mul", *),
+                OpCode::Div => gen_binop!(self, gen_arithop, "div", /),
                 OpCode::Neg => {
                     let v = self.stack.pop().expect("Stack underflow");
                     let val = match v {
@@ -454,12 +528,12 @@ impl VM {
                     };
                     self.stack.push(val)
                 }
-                OpCode::Eq => self.binary_op(gen_cmpop_closure!(==)),
-                OpCode::NEq => self.binary_op(gen_cmpop_closure!(!=)),
-                OpCode::Gt => self.binary_op(gen_cmpop_closure!(>)),
-                OpCode::Lt => self.binary_op(gen_cmpop_closure!(<)),
-                OpCode::Gte => self.binary_op(gen_cmpop_closure!(>=)),
-                OpCode::Lte => self.binary_op(gen_cmpop_closure!(<=)),
+                OpCode::Eq => gen_binop!(self, gen_cmpop, "eq", ==),
+                OpCode::NEq => gen_binop!(self, gen_cmpop, "ne", !=),
+                OpCode::Gt => gen_binop!(self, gen_cmpop, "gt", >),
+                OpCode::Lt => gen_binop!(self, gen_cmpop, "lt", <),
+                OpCode::Gte => gen_binop!(self, gen_cmpop, "gte", >=),
+                OpCode::Lte => gen_binop!(self, gen_cmpop, "lte", <=),
                 OpCode::And(idx) => {
                     let v = self.stack.last().expect("Stack underflow");
                     if v.is_truthy() {
@@ -520,26 +594,15 @@ impl VM {
                             self.stack.push(ret);
                         }
                         Value::Func(func) => {
-                            let param_count = func.param_count;
-                            if param_count != *arg_count {
-                                self.throw(RuntimeError::ParamError {
-                                    expected: ExpectedParamCount::Constant(param_count),
-                                    found: *arg_count,
-                                });
-                                break;
+                            match self.call(&func, &args) {
+                                Ok(v) => {
+                                    self.stack.push(v);
+                                }
+                                Err(e) => {
+                                    self.throw(e);
+                                    break;
+                                }
                             }
-                            let original_level = self.locals.len();
-                            self.locals.extend(func.env.clone());
-                            let mut new_env = Env::new();
-                            for i in 0..*arg_count {
-                                *new_env.get_or_new_var(i) = args[i].clone();
-                            }
-                            self.locals.push(Rc::new(RefCell::new(new_env)));
-                            let tmp = std::mem::take(&mut self.stack);
-                            let ret_val = self.run(Some(&func.code)).unwrap_or(Value::None);
-                            self.locals.truncate(original_level);
-                            self.stack = tmp;
-                            self.stack.push(ret_val);
                         }
                         _ => {
                             self.throw(RuntimeError::TypeError {
@@ -586,11 +649,7 @@ impl VM {
                     match (a, b) {
                         (Value::Table(t), v) => {
                             self.stack.push(
-                                t.borrow()
-                                    .data
-                                    .get(&v)
-                                    .map(|x| x.clone())
-                                    .unwrap_or(Value::None),
+                                index(t, &v)
                             );
                         }
                         (Value::Array(a), Value::Integer(i)) => {
@@ -611,7 +670,7 @@ impl VM {
                                 self.stack.push(a[i].clone());
                             }
                         }
-                        (Value::Array(a), k) => {
+                        (Value::Array(_a), k) => {
                             let proto = &self.arr_prototype;
                             if let Some(v) = proto.data.get(&k) {
                                 self.stack.push(v.clone());
@@ -720,18 +779,29 @@ impl VM {
     pub fn throw(&mut self, error: RuntimeError) {
         self.to_throw = Some(error);
     }
-
-    fn binary_op<F>(&mut self, op: F)
-    where
-        F: FnOnce(Value, Value) -> RuntimeResult<Value>,
-    {
-        let b = self.stack.pop().expect("Stack underflow");
-        let a = self.stack.pop().expect("Stack underflow");
-        match op(a, b) {
-            Ok(r) => self.stack.push(r),
-            Err(e) => self.throw(e),
+    pub fn call(&mut self, func: &Rc<Func>, args: &Vec<Value>) -> RuntimeResult<Value> {
+        let arg_count = args.len();
+        let param_count = func.param_count;
+        if param_count != arg_count {
+            return Err(RuntimeError::ParamError {
+                expected: ExpectedParamCount::Constant(param_count),
+                found: arg_count,
+            });
         }
+        let original_level = self.locals.len();
+        self.locals.extend(func.env.clone());
+        let mut new_env = Env::new();
+        for i in 0..arg_count {
+            *new_env.get_or_new_var(i) = args[i].clone();
+        }
+        self.locals.push(Rc::new(RefCell::new(new_env)));
+        let tmp = std::mem::take(&mut self.stack);
+        let ret_val = self.run(Some(&func.code)).unwrap_or(Value::None);
+        self.locals.truncate(original_level);
+        self.stack = tmp;
+        Ok(ret_val)
     }
+
 }
 
 #[cfg(test)]

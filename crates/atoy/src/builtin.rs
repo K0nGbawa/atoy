@@ -53,7 +53,7 @@ pub fn input(prompt: Option<String>) -> String {
 pub fn repr_inner(value: &Value, seen: &mut HashMap<Value, usize>) -> String {
     let len = seen.len();
     if let Some(id) = seen.get(value) {
-        return format!("<Circular#{}>", id)
+        return format!("#{}", id)
     } else {
         seen.insert(value.clone(), len);
     }
@@ -137,4 +137,15 @@ pub fn getMetatableOf(target: RRTable) -> Value {
     } else {
         Value::None
     }
+}
+
+#[atoy_function]
+pub fn index(target: RRTable, key: &Value) -> Value {
+    let tref = target.borrow();
+    if let Some(value) = tref.data.get(key) {
+        return value.clone();
+    } else if let Some(proto) = &tref.prototype {
+        return index(proto.clone(), key);
+    }
+    Value::None
 }
