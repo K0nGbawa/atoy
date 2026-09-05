@@ -1,0 +1,20 @@
+let meta = {};
+let Class = {};
+
+Class.new = fn() {
+    let a = {};
+    setMetatableOf(a, meta);
+    setPrototypeOf(a, Class);
+    return a;
+};
+
+meta.add = fn(self, other) {
+    return self:add(other);
+};
+
+Class.add = fn(self, other) {
+    return [self, other];
+};
+
+let obj = Class.new();
+println(obj + obj);

@@ -1,8 +1,19 @@
-use std::{cell::RefCell, collections::HashMap, fmt::Display, matches, println, rc::Rc, write};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    fmt::Display,
+    hash::Hash,
+    matches,
+    ops::Deref,
+    println,
+    rc::Rc,
+    unreachable, write,
+};
 
 use thiserror::Error;
 
 use crate::{
+    builtin::repr,
     lexer::Token,
     vm::{Args, Env},
 };
@@ -17,6 +28,8 @@ pub enum ParseError {
     ExpectedIdentifier(String),
     #[error("unexpected end of input")]
     UnexpectedEof,
+    #[error("{expr} is not assignable")]
+    NotAssignable { expr: Expr },
 }
 
 type ParseResult<T> = std::result::Result<T, ParseError>;
@@ -29,6 +42,17 @@ pub enum BinOp {
     Div,
 }
 
+impl Display for BinOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BinOp::Add => write!(f, "+"),
+            BinOp::Sub => write!(f, "-"),
+            BinOp::Mul => write!(f, "*"),
+            BinOp::Div => write!(f, "/"),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum CmpOp {
     Eq,
@@ -39,11 +63,51 @@ pub enum CmpOp {
     Lte,
 }
 
+impl Display for CmpOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CmpOp::Eq => write!(f, "=="),
+            CmpOp::NEq => write!(f, "!="),
+            CmpOp::Gt => write!(f, ">"),
+            CmpOp::Lt => write!(f, "<"),
+            CmpOp::Gte => write!(f, ">="),
+            CmpOp::Lte => write!(f, "<="),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum UnaryOp {
     Not,
     Neg,
     Pos,
+}
+
+impl Display for UnaryOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UnaryOp::Not => write!(f, "!"),
+            UnaryOp::Neg => write!(f, "-"),
+            UnaryOp::Pos => write!(f, "+"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum AssignTarget {
+    Variable(String),
+    Index(Box<Expr>, Box<Expr>),
+    Member(Box<Expr>, String),
+}
+
+impl Display for AssignTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AssignTarget::Variable(name) => write!(f, "{}", name),
+            AssignTarget::Index(expr, index) => write!(f, "{}[{}]", expr, index),
+            AssignTarget::Member(expr, member) => write!(f, "{}.{}", expr, member),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -63,16 +127,63 @@ pub enum Stmt {
         block: Box<Stmt>,
     },
     Assign {
-        name: String,
+        target: AssignTarget,
         value: Expr,
     },
     CompoundAssign {
-        name: String,
+        target: AssignTarget,
         op: BinOp,
         value: Expr,
     },
     Block(Vec<Stmt>),
     Return(Expr),
+}
+
+impl Display for Stmt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Stmt::Expr(expr) => {
+                write!(f, "{};", expr)?;
+            }
+            Stmt::Let { name, value } => {
+                write!(f, "let {} = {};", name, value)?;
+            }
+            Stmt::IfElse {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                write!(f, "if {} {{", condition)?;
+                write!(f, "{}", then_branch)?;
+                if let Some(else_branch) = else_branch {
+                    write!(f, "}} else {{\n{}", else_branch)?;
+                }
+                write!(f, "}}")?;
+            }
+            Stmt::While { condition, block } => {
+                write!(f, "while {} {{", condition)?;
+                write!(f, "{}", block)?;
+                write!(f, "}}")?;
+            }
+            Stmt::Assign { target, value } => {
+                write!(f, "{} = {};", target, value)?;
+            }
+            Stmt::CompoundAssign { target, op, value } => {
+                write!(f, "{} {}= {};", target, op, value)?;
+            }
+            Stmt::Block(block) => {
+                write!(f, "{{")?;
+                for stmt in block {
+                    write!(f, "{}", stmt)?;
+                }
+                write!(f, "}}")?;
+            }
+            Stmt::Return(value) => {
+                write!(f, "return {}", value)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +193,7 @@ pub enum Expr {
     Bool(bool),
     Ident(String),
     String(String),
+    Fn(Vec<String>, Box<Stmt>),
     BinaryOp {
         left: Box<Expr>,
         op: BinOp,
@@ -100,9 +212,59 @@ pub enum Expr {
         left: Box<Expr>,
         right: Box<Expr>,
     },
+    ConcatOp {
+        left: Box<Expr>,
+        right: Box<Expr>,
+    },
     Unary(UnaryOp, Box<Expr>),
+    MethodCall(Box<Expr>, String, Vec<Expr>),
     Call(Box<Expr>, Vec<Expr>),
-    Fn(Vec<String>, Box<Stmt>),
+    Index(Box<Expr>, Box<Expr>),
+    Member(Box<Expr>, String),
+    Array(Vec<Expr>),
+    Table(Vec<(Expr, Expr)>),
+}
+
+fn join<T: Display>(vec: &Vec<T>, sep: &str) -> String {
+    vec.iter()
+        .map(|x| x.to_string())
+        .collect::<Vec<_>>()
+        .join(sep)
+}
+
+impl Display for Expr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Expr::Integer(i) => write!(f, "{}", i),
+            Expr::Float(fl) => write!(f, "{}", fl),
+            Expr::Bool(b) => write!(f, "{}", b),
+            Expr::Ident(s) => write!(f, "{}", s),
+            Expr::String(s) => write!(f, "{}", Token::String(s.clone()).to_string()),
+            Expr::Fn(params, body) => write!(f, "fn({}) {}", params.join(", "), body),
+            Expr::BinaryOp { left, op, right } => write!(f, "({} {} {})", left, op, right),
+            Expr::CompareOp { left, op, right } => write!(f, "({} {} {})", left, op, right),
+            Expr::AndOp { left, right } => write!(f, "({} and {})", left, right),
+            Expr::OrOp { left, right } => write!(f, "({} or {})", left, right),
+            Expr::ConcatOp { left, right } => write!(f, "({} .. {})", left, right),
+            Expr::Unary(op, expr) => write!(f, "({}{})", op, expr),
+            Expr::MethodCall(obj, method, args) => {
+                write!(f, "{}.{}({})", obj, method, join(args, ", "))
+            }
+            Expr::Call(func, args) => write!(f, "{}({})", func, join(args, ", ")),
+            Expr::Index(expr, index) => write!(f, "{}[{}]", expr, index),
+            Expr::Member(expr, member) => write!(f, "{}.{}", expr, member),
+            Expr::Array(exprs) => write!(f, "[{}]", join(exprs, ", ")),
+            Expr::Table(entries) => write!(
+                f,
+                "{{{}}}",
+                entries
+                    .iter()
+                    .map(|(k, v)| format!("[{}]: {}", k, v))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -134,6 +296,13 @@ pub enum OpCode {
     Not,
     And(usize),
     Or(usize),
+    Index,
+    IndexAssign(bool),
+    Concat,
+    Dup(usize),
+    Swap2,
+    NewArray(usize),
+    NewTable,
 }
 
 #[derive(Debug)]
@@ -175,7 +344,26 @@ pub enum Value {
     String(Rc<String>),
     BuiltInFunc(Rc<dyn Fn(Args) -> crate::vm::RuntimeResult<Value>>),
     Func(Rc<Func>),
+    Table(Rc<RefCell<Table>>),
+    Array(Rc<RefCell<Vec<Value>>>),
+    Set(Rc<RefCell<HashSet<Value>>>),
     None,
+}
+
+pub struct Table {
+    pub data: HashMap<Value, Value>,
+    pub prototype: Option<Rc<RefCell<Table>>>,
+    pub meta: Option<Rc<RefCell<Table>>>,
+}
+
+impl Table {
+    pub fn new() -> Table {
+        Self {
+            data: HashMap::new(),
+            prototype: None,
+            meta: None,
+        }
+    }
 }
 
 impl std::fmt::Debug for Value {
@@ -188,6 +376,9 @@ impl std::fmt::Debug for Value {
             BuiltInFunc(func) => write!(f, "Value(BuiltinFunc({:p}))", *func),
             Func(func) => write!(f, "Value(Func({:p}))", *func),
             String(string) => write!(f, "Value(Rc(String({})))", **string),
+            Table(table) => write!(f, "Value(Table({:p}))", *table),
+            Array(array) => write!(f, "Value(Array({:p}))", *array),
+            Set(set) => write!(f, "Value(Set({:p}))", *set),
             None => write!(f, "Value(None)"),
         }
     }
@@ -201,18 +392,16 @@ impl Value {
             Value::Bool(bo) => *bo,
             Value::BuiltInFunc(_) | Value::Func(_) => true,
             Value::String(string) => string.is_empty(),
+            Value::Table(_table) => true,
+            Value::Array(array) => array.borrow().len() > 0,
+            Value::Set(set) => set.borrow().len() > 0,
             Value::None => false,
         }
     }
     pub fn to_string(&self) -> String {
         match self {
-            Value::Integer(i) => i.to_string(),
-            Value::Float(f) => f.to_string(),
-            Value::Bool(bo) => bo.to_string(),
-            Value::BuiltInFunc(rc) => format!("Builtin Function at {:p}", *rc),
-            Value::Func(rc) => format!("Function at {:p}", *rc),
             Value::String(string) => (**string).clone(),
-            Value::None => "None".to_string(),
+            other => repr(other),
         }
     }
 }
@@ -227,6 +416,9 @@ impl PartialEq for Value {
             (BuiltInFunc(n1), BuiltInFunc(n2)) => Rc::ptr_eq(n1, n2),
             (Func(n1), Func(n2)) => Rc::ptr_eq(n1, n2),
             (String(n1), String(n2)) => n1 == n2,
+            (Table(n1), Table(n2)) => Rc::ptr_eq(n1, n2),
+            (Array(n1), Array(n2)) => Rc::ptr_eq(n1, n2),
+            (Set(n1), Set(n2)) => Rc::ptr_eq(n1, n2),
             (None, None) => true,
             (_, _) => false,
         }
@@ -236,6 +428,24 @@ impl PartialEq for Value {
     }
 }
 
+impl Eq for Value {}
+impl Hash for Value {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        use Value::*;
+        match self {
+            Float(n) => n.to_bits().hash(state),
+            Integer(n) => n.hash(state),
+            Bool(n) => n.hash(state),
+            BuiltInFunc(func) => Rc::as_ptr(func).hash(state),
+            Func(func) => Rc::as_ptr(func).hash(state),
+            String(s) => s.hash(state),
+            Table(table) => Rc::as_ptr(table).hash(state),
+            Array(array) => Rc::as_ptr(array).hash(state),
+            Set(set) => set.as_ptr().hash(state),
+            None => ().hash(state),
+        }
+    }
+}
 impl Clone for Value {
     fn clone(&self) -> Self {
         use Value::*;
@@ -246,6 +456,9 @@ impl Clone for Value {
             BuiltInFunc(func) => BuiltInFunc(func.clone()),
             Func(func) => Func(func.clone()),
             String(s) => String(s.clone()),
+            Table(table) => Table(table.clone()),
+            Array(array) => Array(array.clone()),
+            Set(set) => Set(set.clone()),
             None => None,
         }
     }
@@ -258,9 +471,30 @@ impl Display for Value {
             Float(n) => write!(f, "{n}"),
             Integer(n) => write!(f, "{n}"),
             Bool(n) => write!(f, "{n}"),
-            BuiltInFunc(func) => write!(f, "Builtin Function at {:p}", *func),
-            Func(func) => write!(f, "Function at {:p}", *func),
+            BuiltInFunc(func) => write!(f, "Builtin Function at {:p}", func),
+            Func(func) => write!(f, "Function at {:p}", func),
             String(s) => write!(f, "\"{}\"", s.escape_debug()),
+            Table(table) => write!(f, "Table at {:p}", *table),
+            Array(array) => write!(
+                f,
+                "Array [{}]",
+                array
+                    .borrow()
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+
+            Set(set) => write!(
+                f,
+                "Set {{{}}}",
+                set.borrow()
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             None => write!(f, "None"),
         }
     }
@@ -344,6 +578,17 @@ impl Parser {
         }
     }
 
+    fn peek_assign_op(&self) -> Option<Option<BinOp>> {
+        match self.peek() {
+            Token::Assign => Some(None),
+            Token::PlusAssign => Some(Some(BinOp::Add)),
+            Token::MinusAssign => Some(Some(BinOp::Sub)),
+            Token::StarAssign => Some(Some(BinOp::Mul)),
+            Token::SlashAssign => Some(Some(BinOp::Div)),
+            _ => None,
+        }
+    }
+
     pub fn parse(&mut self) -> ParseResult<Vec<Stmt>> {
         let mut stmts = Vec::new();
         while *self.peek() != Token::Eof {
@@ -370,24 +615,12 @@ impl Parser {
             }
             _ => {
                 let left: Expr = self.parse_expr()?;
-                let res = match &left {
-                    Expr::Ident(name) => match self.peek() {
-                        Token::Assign => self.parse_assign_stmt(name.clone())?,
-                        Token::PlusAssign => {
-                            self.parse_compound_assign_stmt(name.clone(), BinOp::Add)?
-                        }
-                        Token::MinusAssign => {
-                            self.parse_compound_assign_stmt(name.clone(), BinOp::Sub)?
-                        }
-                        Token::StarAssign => {
-                            self.parse_compound_assign_stmt(name.clone(), BinOp::Mul)?
-                        }
-                        Token::SlashAssign => {
-                            self.parse_compound_assign_stmt(name.clone(), BinOp::Div)?
-                        }
-                        _ => Stmt::Expr(left),
-                    },
-                    _ => Stmt::Expr(left),
+                let res = match self.peek_assign_op() {
+                    Some(Some(op)) => {
+                        self.parse_compound_assign_stmt(Parser::expr_to_target(left)?, op)?
+                    }
+                    Some(None) => self.parse_assign_stmt(Parser::expr_to_target(left)?)?,
+                    None => Stmt::Expr(left),
                 };
                 self.expect(Token::Semicolon)?;
                 Ok(res)
@@ -395,20 +628,29 @@ impl Parser {
         }
     }
 
-    fn parse_assign_stmt(&mut self, name: String) -> ParseResult<Stmt> {
+    fn expr_to_target(expr: Expr) -> ParseResult<AssignTarget> {
+        match expr {
+            Expr::Ident(name) => Ok(AssignTarget::Variable(name)),
+            Expr::Member(a, b) => Ok(AssignTarget::Member(a, b)),
+            Expr::Index(a, b) => Ok(AssignTarget::Index(a, b)),
+            _ => Err(ParseError::NotAssignable { expr }),
+        }
+    }
+
+    fn parse_assign_stmt(&mut self, target: AssignTarget) -> ParseResult<Stmt> {
         self.expect(Token::Assign)?;
 
         let value = self.parse_expr()?;
 
-        Ok(Stmt::Assign { name, value })
+        Ok(Stmt::Assign { target, value })
     }
 
-    fn parse_compound_assign_stmt(&mut self, name: String, op: BinOp) -> ParseResult<Stmt> {
+    fn parse_compound_assign_stmt(&mut self, target: AssignTarget, op: BinOp) -> ParseResult<Stmt> {
         self.advance();
 
         let value = self.parse_cmp_op()?;
 
-        Ok(Stmt::CompoundAssign { name, op, value })
+        Ok(Stmt::CompoundAssign { target, op, value })
     }
 
     fn parse_if_stmt(&mut self) -> ParseResult<Stmt> {
@@ -467,7 +709,7 @@ impl Parser {
         if self.peek().clone() == Token::Fn {
             self.parse_fn()
         } else {
-            self.parse_or_op()
+            self.parse_concat_op()
         }
     }
 
@@ -490,6 +732,16 @@ impl Parser {
         let block = self.parse_block()?;
         self.in_func -= 1;
         Ok(Expr::Fn(args, Box::new(block)))
+    }
+
+    fn parse_concat_op(&mut self) -> ParseResult<Expr> {
+        let mut left = self.parse_or_op()?;
+        while *self.peek() == Token::Concat {
+            self.advance();
+            let right = self.parse_or_op()?;
+            left = Expr::ConcatOp { left: Box::new(left), right: Box::new(right) };
+        }
+        Ok(left)
     }
 
     fn parse_or_op(&mut self) -> ParseResult<Expr> {
@@ -587,27 +839,52 @@ impl Parser {
         }
     }
 
+    fn parse_args(&mut self) -> ParseResult<Vec<Expr>> {
+        let mut args = Vec::new();
+        while *self.peek() != Token::RParen && *self.peek() != Token::Eof {
+            let arg = self.parse_expr()?;
+            args.push(arg);
+            let token = self.peek();
+            if *token == Token::Comma {
+                self.advance();
+            } else if *token != Token::RParen && *token != Token::Eof {
+                return Err(ParseError::UnexpectedToken(token.to_string()));
+            }
+        }
+        self.expect(Token::RParen)?;
+        Ok(args)
+    }
+
     pub fn parse_call(&mut self) -> ParseResult<Expr> {
         let mut left = self.parse_atom()?;
-        if *self.peek() != Token::LParen {
-            Ok(left)
-        } else {
-            self.advance();
-            let mut args = Vec::new();
-            while *self.peek() != Token::RParen && *self.peek() != Token::Eof {
-                let arg = self.parse_expr()?;
-                args.push(arg);
-                let token = self.peek();
-                if *token == Token::Comma {
-                    self.advance();
-                } else if *token != Token::RParen && *token != Token::Eof {
-                    return Err(ParseError::UnexpectedToken(token.to_string()));
+        while matches!(
+            *self.peek(),
+            Token::LParen | Token::Colon | Token::LBracket | Token::Dot
+        ) {
+            match self.advance() {
+                Token::LParen => {
+                    let args = self.parse_args()?;
+                    left = Expr::Call(Box::new(left), args);
                 }
+                Token::Colon => {
+                    let method_name = self.expect_ident()?;
+                    self.expect(Token::LParen)?;
+                    let args = self.parse_args()?;
+                    left = Expr::MethodCall(Box::new(left), method_name, args);
+                }
+                Token::LBracket => {
+                    let index = self.parse_expr()?;
+                    self.expect(Token::RBracket)?;
+                    left = Expr::Index(Box::new(left), Box::new(index));
+                }
+                Token::Dot => {
+                    let prop = self.expect_ident()?;
+                    left = Expr::Member(Box::new(left), prop);
+                }
+                _ => unreachable!(),
             }
-            self.expect(Token::RParen)?;
-            left = Expr::Call(Box::new(left), args);
-            Ok(left)
         }
+        Ok(left)
     }
 
     pub fn parse_atom(&mut self) -> ParseResult<Expr> {
@@ -641,6 +918,48 @@ impl Parser {
             Token::False => {
                 self.advance();
                 Ok(Expr::Bool(false))
+            }
+            Token::LBracket => {
+                self.advance();
+                let mut items = Vec::new();
+                while *self.peek() != Token::RBracket && *self.peek() != Token::Eof {
+                    let item = self.parse_expr()?;
+                    items.push(item);
+                    if *self.peek() == Token::Comma {
+                        self.advance();
+                    }
+                }
+                self.expect(Token::RBracket)?;
+                Ok(Expr::Array(items))
+            }
+            Token::LBrace => {
+                self.advance();
+                let mut items = Vec::new();
+                while *self.peek() != Token::RBrace && *self.peek() != Token::Eof {
+                    match self.advance() {
+                        Token::LBracket => {
+                            let key = self.parse_expr()?;
+                            self.expect(Token::RBracket)?;
+                            self.expect(Token::Colon)?;
+                            let val = self.parse_expr()?;
+                            items.push((key, val));
+                        }
+                        Token::Ident(s) => {
+                            let key = Expr::String(s.clone());
+                            self.expect(Token::Colon)?;
+                            let val = self.parse_expr()?;
+                            items.push((key, val));
+                        }
+                        token => {
+                            return Err(ParseError::UnexpectedToken(token.to_string()));
+                        }
+                    }
+                    if *self.peek() == Token::Comma {
+                        self.advance();
+                    }
+                }
+                self.expect(Token::RBrace)?;
+                Ok(Expr::Table(items))
             }
             other => {
                 if matches!(other, Token::Eof) {
@@ -723,54 +1042,99 @@ impl Compiler {
                 else_branch,
             } => self.compile_if_expr(condition, then_branch, else_branch),
             Stmt::While { condition, block } => self.compile_while_expr(condition, block),
-            Stmt::Assign { name, value } => self.compile_assign_expr(name, value),
+            Stmt::Assign { target, value } => match target {
+                AssignTarget::Variable(name) => {
+                    self.compile_compound_assign_expr(name, None, value)
+                }
+                AssignTarget::Index(name, index) => {
+                    self.compile_compound_index_assign_expr(name, index, None, value)
+                }
+                AssignTarget::Member(name, prop) => self.compile_compound_index_assign_expr(
+                    name,
+                    &Expr::String(prop.clone()),
+                    None,
+                    value,
+                ),
+            },
             Stmt::Return(expr) => {
                 self.compile_expr(expr);
                 self.push(OpCode::Ret);
             }
-            Stmt::CompoundAssign { name, op, value } => {
-                self.compile_compound_assign_expr(name, op, value)
-            }
+            Stmt::CompoundAssign { target, op, value } => match target {
+                AssignTarget::Variable(name) => {
+                    self.compile_compound_assign_expr(name, Some(op), value)
+                }
+                AssignTarget::Index(name, index) => {
+                    self.compile_compound_index_assign_expr(name, index, Some(op), value)
+                }
+                AssignTarget::Member(name, prop) => self.compile_compound_index_assign_expr(
+                    name,
+                    &Expr::String(prop.clone()),
+                    Some(op),
+                    value,
+                ),
+            },
         }
     }
 
-    fn compile_compound_assign_expr(&mut self, name: &String, op: &BinOp, value: &Expr) {
-        let mut is_global = true;
+    fn compile_compound_assign_expr(&mut self, name: &String, op: Option<&BinOp>, value: &Expr) {
+        let mut local_layer_idx = None;
         for (lev, table) in self.symbol_tables.iter().enumerate().rev() {
             if let Some(idx) = table.get(name) {
-                self.push(OpCode::LoadLocal(self.symbol_tables.len() - lev, *idx));
-                is_global = false;
+                local_layer_idx = Some((self.symbol_tables.len() - lev, *idx));
                 break;
             }
         }
-        if is_global {
-            self.push(OpCode::LoadGlobal(name.clone()));
-        }
-        self.compile_expr(value);
-        self.push(match op {
-            BinOp::Add => OpCode::Add,
-            BinOp::Sub => OpCode::Sub,
-            BinOp::Mul => OpCode::Mul,
-            BinOp::Div => OpCode::Div,
-        });
-        for (lev, table) in self.symbol_tables.iter().enumerate().rev() {
-            if let Some(idx) = table.get(name) {
-                self.push(OpCode::StoreLocal(self.symbol_tables.len() - lev, *idx));
-                return;
+        if let Some(op) = op {
+            if let Some((lev, idx)) = local_layer_idx {
+                self.push(OpCode::LoadLocal(lev, idx));
+            } else {
+                self.push(OpCode::LoadGlobal(name.clone()));
             }
+
+            self.compile_expr(value);
+
+            self.push(match op {
+                BinOp::Add => OpCode::Add,
+                BinOp::Sub => OpCode::Sub,
+                BinOp::Mul => OpCode::Mul,
+                BinOp::Div => OpCode::Div,
+            });
+        } else {
+            self.compile_expr(value);
         }
-        self.push(OpCode::StoreGlobal(name.clone()))
+        if let Some((lev, idx)) = local_layer_idx {
+            self.push(OpCode::StoreLocal(lev, idx));
+        } else {
+            self.push(OpCode::StoreGlobal(name.clone()));
+        }
     }
 
-    fn compile_assign_expr(&mut self, name: &String, value: &Expr) {
-        self.compile_expr(value);
-        for (lev, table) in self.symbol_tables.iter().enumerate().rev() {
-            if let Some(idx) = table.get(name) {
-                self.push(OpCode::StoreLocal(self.symbol_tables.len() - lev, *idx));
-                return;
-            }
+    fn compile_compound_index_assign_expr(
+        &mut self,
+        container: &Expr,
+        index: &Expr,
+        op: Option<&BinOp>,
+        value: &Expr,
+    ) {
+        self.compile_expr(container); // [容器]
+        self.compile_expr(index); // [容器 索引]
+        if let Some(op) = op {
+            self.push(OpCode::Dup(2)); // [容器 索引 容器 索引]
+            self.push(OpCode::Index); // [容器 索引 原值]
+
+            self.compile_expr(value); // [容器 索引 原值 另一个操作数]
+
+            self.push(match op {
+                BinOp::Add => OpCode::Add,
+                BinOp::Sub => OpCode::Sub,
+                BinOp::Mul => OpCode::Mul,
+                BinOp::Div => OpCode::Div,
+            }); // [容器 索引 结果]
+        } else {
+            self.compile_expr(value);
         }
-        self.push(OpCode::StoreGlobal(name.clone()))
+        self.push(OpCode::IndexAssign(false));
     }
 
     fn compile_block(&mut self, stmts: &Vec<Stmt>) {
@@ -816,7 +1180,7 @@ impl Compiler {
     }
 
     fn compile_let_expr(&mut self, name: &String, value: &Expr) {
-        self.compile_assign_expr(name, value);
+        self.compile_compound_assign_expr(name, None, value);
     }
 
     fn compile_expr(&mut self, expr: &Expr) {
@@ -916,6 +1280,46 @@ impl Compiler {
                 self.exit_block();
                 let opcodes = self.exit_fn();
                 self.push(OpCode::PushFn(names.len(), opcodes));
+            }
+            Expr::Index(container, index) => {
+                self.compile_expr(container);
+                self.compile_expr(index);
+                self.push(OpCode::Index);
+            }
+            Expr::Member(container, name) => {
+                self.compile_expr(container);
+                self.push(OpCode::Push(Value::String(Rc::new(name.clone()))));
+                self.push(OpCode::Index);
+            }
+            Expr::MethodCall(container, name, args) => {
+                self.compile_expr(container); // [容器]
+                self.push(OpCode::Dup(1)); // [容器 容器]
+                self.push(OpCode::Push(Value::String(Rc::new(name.clone())))); // [容器 容器 方法名]
+                self.push(OpCode::Index); // [容器 方法]
+                self.push(OpCode::Swap2); // [方法 容器]
+                for arg in args {
+                    self.compile_expr(arg);
+                }
+                self.push(OpCode::Call(args.len() + 1));
+            }
+            Expr::Array(elements) => {
+                for element in elements {
+                    self.compile_expr(element);
+                }
+                self.push(OpCode::NewArray(elements.len()));
+            }
+            Expr::Table(pairs) => {
+                self.push(OpCode::NewTable);
+                for (key, value) in pairs {
+                    self.compile_expr(key);
+                    self.compile_expr(value);
+                    self.push(OpCode::IndexAssign(true));
+                }
+            }
+            Expr::ConcatOp { left, right } => {
+                self.compile_expr(left);
+                self.compile_expr(right);
+                self.push(OpCode::Concat);
             }
         }
     }

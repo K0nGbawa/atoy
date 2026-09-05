@@ -1,3 +1,4 @@
+use atoy::builtin::repr;
 use atoy::parser::ParseError;
 use atoy::{lexer::Lexer, parser::Compiler, parser::Parser, vm::VM};
 use std::rc::Rc;
@@ -44,7 +45,7 @@ fn repl() -> anyhow::Result<()> {
                         let res = vm.run(None);
                         match res {
                             None => {}
-                            Some(val) => println!("{}", val),
+                            Some(val) => println!("{}", repr(&val)),
                         }
                         buffer.clear()
                     }
@@ -95,7 +96,7 @@ fn main() -> anyhow::Result<()> {
     let mut vm = VM::new(opcodes);
     let res = vm.run(None);
     if let Some(val) = res {
-        println!("Program exited with result: {}", val);
+        println!("Program exited with result: {}", atoy::builtin::repr(&val));
     } else {
         println!("Program exited with no result");
     }

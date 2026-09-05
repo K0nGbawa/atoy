@@ -20,8 +20,29 @@ fn is_ref_value(ty: &Type) -> bool {
     }
 }
 
+struct AtoyFunctionAttr {
+    method: Option<Ident>,
+}
+impl Parse for AtoyFunctionAttr {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        if input.is_empty() {
+            return Ok(Self { method: None });
+        } else {
+            let method = input.parse::<Ident>()?;
+            if method.to_string() == "method" {
+                input.parse::<Token![=]>()?;
+                return Ok(Self {
+                    method: Some(input.parse()?),
+                });
+            } else {
+                panic!("Expected identifier 'method'")
+            }
+        }
+    }
+}
 #[proc_macro_attribute]
-pub fn atoy_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn atoy_function(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let attr = parse_macro_input!(attr as AtoyFunctionAttr);
     let ast = parse_macro_input!(item as ItemFn);
     let sig = &ast.sig;
     let vis = &ast.vis;
@@ -33,23 +54,10 @@ pub fn atoy_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let params = collect_params(sig);
     let escaped_name = name.to_string().trim_start_matches("r#").to_string();
     let register_fn = format_ident!("__atoy_register_{}", name);
+    let wrapper_fn = format_ident!("wrapped_{}", name);
+    let register_method_fn = format_ident!("__atoy_register_method_{}", name);
 
-    // if inputs.is_empty() {
-    //     let expanded = quote! {
-    //         #(#attrs)*
-    //         #vis #sig #block
-
-    //         pub fn #register_fn(vm: &mut crate::vm::VM) {
-    //             vm.register_func(stringify!(#name), ::std::rc::Rc::new(|args: crate::vm::Args| -> Result<crate::parser::Value> {
-    //                 let result = #name();
-    //                 Ok(result.into())
-    //             }))
-    //         }
-    //     };
-    //     return TokenStream::from(expanded);
-    // }
     let param_names: Vec<_> = params.iter().map(|p| &p.name).collect();
-    let len = param_names.len();
     let mut found_args = false;
     let mut required_param_count = 0usize;
     let mut optional_param_count = 0usize;
@@ -143,17 +151,33 @@ pub fn atoy_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
+    let register_fn_declaration = if let Some(method) = attr.method {
+        quote! {
+            pub fn #register_method_fn(prototype: &mut crate::parser::Table) {
+                prototype.data.insert(Value::from(stringify!(#method)), Value::from(#wrapper_fn));
+            }
+        }
+    } else {
+        quote! {
+
+            pub fn #register_fn(vm: &mut crate::vm::VM) {
+                vm.register_func(#escaped_name, ::std::rc::Rc::new(#wrapper_fn));
+            }
+        }
+    };
+
     let expanded = quote! {
         #(#attrs)*
         #vis #sig #block
 
-        pub fn #register_fn(vm: &mut crate::vm::VM) {
-            vm.register_func(#escaped_name, ::std::rc::Rc::new(|args: crate::vm::Args| -> crate::vm::RuntimeResult<crate::parser::Value> {
-                #ensure_length
-                #(#param_errors)*
-                #invoke
-            }));
+        pub fn #wrapper_fn(args: crate::vm::Args) -> crate::vm::RuntimeResult<crate::parser::Value> {
+            #ensure_length
+            #(#param_errors)*
+            #invoke
         }
+
+        #register_fn_declaration
+
     };
     TokenStream::from(expanded)
 }
@@ -208,6 +232,52 @@ pub fn register_fns(input: TokenStream) -> TokenStream {
                     leading_colon: None,
                 },
                 format_ident!("__atoy_register_{}", ident),
+            )
+        })
+        .unzip();
+    let expanded = quote! {
+        #(
+            #paths #funcs(#vm_expr);
+        )*
+    };
+    TokenStream::from(expanded)
+}
+
+struct RegisterMethodsArgs {
+    table_expr: Expr,
+    funcs: Punctuated<Path, Token![,]>,
+}
+
+impl Parse for RegisterMethodsArgs {
+    // TODO: implement parsing logic
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let vm_expr = input.parse()?;
+        let _ = input.parse::<Token![,]>()?;
+        let content;
+        let _paren = parenthesized!(content in input);
+        let funcs = Punctuated::<Path, Token![,]>::parse_terminated(&content)?;
+        Ok(Self {
+            table_expr: vm_expr,
+            funcs,
+        })
+    }
+}
+
+#[proc_macro]
+pub fn register_methods(input: TokenStream) -> TokenStream {
+    let RegisterFnArgs { vm_expr, funcs } = parse_macro_input!(input as RegisterFnArgs);
+    let (paths, funcs): (Vec<Path>, Vec<Ident>) = funcs
+        .into_iter()
+        .map(|p| {
+            let mut punc = p.segments.clone();
+            let last = punc.pop().expect("should be at least one segment");
+            let ident = last.ident;
+            (
+                Path {
+                    segments: punc,
+                    leading_colon: None,
+                },
+                format_ident!("__atoy_register_method_{}", ident),
             )
         })
         .unzip();
