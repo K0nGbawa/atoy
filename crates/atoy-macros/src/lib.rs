@@ -1,11 +1,9 @@
+use std::panic;
+
 use proc_macro::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
 use syn::{
-    Expr, FnArg, GenericArgument, Ident, ItemFn, Pat, PatIdent, Path, PathArguments, ReturnType,
-    Signature, Token, Type, TypeReference, parenthesized,
-    parse::{Parse, ParseStream},
-    parse_macro_input,
-    punctuated::Punctuated,
+    Expr, FnArg, GenericArgument, Ident, ItemFn, Pat, PatIdent, Path, PathArguments, ReturnType, Signature, Token, Type, TypeReference, ext::IdentExt, parenthesized, parse::{Parse, ParseStream}, parse_macro_input, punctuated::Punctuated,
 };
 
 fn is_ref_value(ty: &Type) -> bool {
@@ -13,6 +11,18 @@ fn is_ref_value(ty: &Type) -> bool {
         && let Type::Path(p) = &**elem
         && let Some(seg) = p.path.segments.last()
         && seg.ident == "Value"
+    {
+        true
+    } else {
+        false
+    }
+}
+
+fn is_mut_ref_vm(ty: &Type) -> bool {
+    if let Type::Reference(TypeReference { elem, mutability: Some(_), .. }) = ty
+        && let Type::Path(p) = &**elem
+        && let Some(seg) = p.path.segments.last()
+        && seg.ident == "VM"
     {
         true
     } else {
@@ -35,7 +45,7 @@ impl Parse for AtoyFunctionAttr {
                     method: Some(input.parse()?),
                 });
             } else {
-                panic!("Expected identifier 'method'")
+                panic!("Expected identifier 'method'");
             }
         }
     }
@@ -49,7 +59,7 @@ pub fn atoy_function(attr: TokenStream, item: TokenStream) -> TokenStream {
     let block = &ast.block;
     let attrs = &ast.attrs;
     let name = &sig.ident;
-    let inputs = &sig.inputs;
+    let _inputs = &sig.inputs;
     let output = &sig.output;
     let params = collect_params(sig);
     let escaped_name = name.to_string().trim_start_matches("r#").to_string();
@@ -67,8 +77,8 @@ pub fn atoy_function(attr: TokenStream, item: TokenStream) -> TokenStream {
         .map(|(i, p)| {
             let arg_name = &p.name;
             let ty = &p.ty;
-            if let Type::Path(p) = ty {
-                if let Some(seg) = p.path.segments.last() {
+            if let Type::Path(p) = ty &&
+               let Some(seg) = p.path.segments.last() {
                     if seg.ident == "Option"
                         && let PathArguments::AngleBracketed(args) = &seg.arguments
                         && let GenericArgument::Type(abty) = args.args
@@ -89,7 +99,7 @@ pub fn atoy_function(attr: TokenStream, item: TokenStream) -> TokenStream {
                                     }).transpose()?;
                             }
                         }
-                    } else if seg.ident == "Args" && i == params.len() - 1 {
+                    }else if seg.ident == "Args" && i == params.len() - 1 {
                         found_args = true;
                         return quote_spanned! { arg_name.span() =>
                             let #arg_name = args;
@@ -99,7 +109,11 @@ pub fn atoy_function(attr: TokenStream, item: TokenStream) -> TokenStream {
                             compile_error!("The Args must be the last parameter.");
                         };
                     }
-                }
+                
+            } else if is_mut_ref_vm(ty) {
+                return quote_spanned! { arg_name.span() =>
+                    let #arg_name = vm;
+                };
             } else if is_ref_value(ty) {
                 if optional_param_count > 0 {
                     return quote! {
@@ -116,11 +130,12 @@ pub fn atoy_function(attr: TokenStream, item: TokenStream) -> TokenStream {
                     compile_error!("Optional parameters must be after required parameters.");
                 }
             }
-            required_param_count += 1;
-            quote_spanned! { arg_name.span() =>
-                let #arg_name = args.get_arg_into::<#ty>(#i)
+            let tokstr = quote_spanned! { arg_name.span() =>
+                let #arg_name = args.get_arg_into::<#ty>(#required_param_count)
                     .map_err(|e| crate::builtin::try_add_fn_info(e, concat!("Built-in Function `", #escaped_name, "()`")))?;
-            }
+            };
+            required_param_count += 1;
+            tokstr
         })
         .collect();
     let total_param_count = required_param_count + optional_param_count;
@@ -143,23 +158,29 @@ pub fn atoy_function(attr: TokenStream, item: TokenStream) -> TokenStream {
                 Ok(crate::parser::Value::None)
             }
         }
-        ReturnType::Type(_, _) => {
-            quote! {
-                let ret = #name(#(#param_names),*);
-                Ok(crate::parser::Value::from(ret))
+        ReturnType::Type(_, ty) => {
+            if let Type::Path(p) = &**ty && let Some(seg) = p.path.segments.last() && seg.ident == "RuntimeResult" {
+                quote! {
+                    #name(#(#param_names),*)
+                }
+            } else {
+                quote! {
+                    let ret = #name(#(#param_names),*);
+                    Ok(crate::parser::Value::from(ret))
+                }
             }
         }
     };
 
     let register_fn_declaration = if let Some(method) = attr.method {
+        let escaped = method.unraw();
         quote! {
             pub fn #register_method_fn(prototype: &mut crate::parser::Table) {
-                prototype.data.insert(Value::from(stringify!(#method)), Value::from(#wrapper_fn));
+                prototype.data.insert(Value::from(stringify!(#escaped)), Value::from(#wrapper_fn));
             }
         }
     } else {
         quote! {
-
             pub fn #register_fn(vm: &mut crate::vm::VM) {
                 vm.register_func(#escaped_name, ::std::rc::Rc::new(#wrapper_fn));
             }
@@ -170,7 +191,7 @@ pub fn atoy_function(attr: TokenStream, item: TokenStream) -> TokenStream {
         #(#attrs)*
         #vis #sig #block
 
-        pub fn #wrapper_fn(args: crate::vm::Args) -> crate::vm::RuntimeResult<crate::parser::Value> {
+        pub fn #wrapper_fn(args: crate::vm::Args, vm: &mut crate::vm::VM) -> crate::vm::RuntimeResult<crate::parser::Value> {
             #ensure_length
             #(#param_errors)*
             #invoke
@@ -243,25 +264,25 @@ pub fn register_fns(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-struct RegisterMethodsArgs {
-    table_expr: Expr,
-    funcs: Punctuated<Path, Token![,]>,
-}
+// struct RegisterMethodsArgs {
+//     table_expr: Expr,
+//     funcs: Punctuated<Path, Token![,]>,
+// }
 
-impl Parse for RegisterMethodsArgs {
-    // TODO: implement parsing logic
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let vm_expr = input.parse()?;
-        let _ = input.parse::<Token![,]>()?;
-        let content;
-        let _paren = parenthesized!(content in input);
-        let funcs = Punctuated::<Path, Token![,]>::parse_terminated(&content)?;
-        Ok(Self {
-            table_expr: vm_expr,
-            funcs,
-        })
-    }
-}
+// impl Parse for RegisterMethodsArgs {
+//     // TODO: implement parsing logic
+//     fn parse(input: ParseStream) -> syn::Result<Self> {
+//         let vm_expr = input.parse()?;
+//         let _ = input.parse::<Token![,]>()?;
+//         let content;
+//         let _paren = parenthesized!(content in input);
+//         let funcs = Punctuated::<Path, Token![,]>::parse_terminated(&content)?;
+//         Ok(Self {
+//             table_expr: vm_expr,
+//             funcs,
+//         })
+//     }
+// }
 
 #[proc_macro]
 pub fn register_methods(input: TokenStream) -> TokenStream {

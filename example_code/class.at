@@ -1,0 +1,30 @@
+class A {
+    new(self, name) {
+        self.name = name;
+    }
+    :method(b) {
+        println(b);
+    }
+    +(a, b) {
+        return {
+            [a]: b
+        };
+    }
+}
+
+class B: A {
+    new(self, name) {
+        supermeta.new(self, name);
+    }
+    -(a, b) {
+        println(supermeta);
+        return supermeta.add(a, b);
+    }
+}
+
+let a = new A("Minkey");
+let b = new B("Young");
+a:method(1);
+b:method(2);
+println(a + b);
+println(b - a);

@@ -1,13 +1,5 @@
 use std::{
-    cell::RefCell,
-    collections::{HashMap, HashSet},
-    fmt::Display,
-    hash::Hash,
-    matches,
-    ops::Deref,
-    println,
-    rc::Rc,
-    unreachable, write,
+    cell::RefCell, collections::{HashMap, HashSet}, f32::consts::E, fmt::{Display, format}, format, hash::Hash, matches, ops::Deref, println, rc::Rc, unreachable, vec, write,
 };
 
 use thiserror::Error;
@@ -137,6 +129,119 @@ pub enum Stmt {
     },
     Block(Vec<Stmt>),
     Return(Expr),
+    Class {
+        name: String,
+        methods: Vec<Method>,
+        meta_methods: Vec<MetaMethod>,
+        super_class: Option<String>
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct Method {
+    name: String,
+    params: Vec<String>,
+    body: Box<Stmt>,
+    coloned: bool,
+}
+
+impl Display for Method {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}{}({}) {}",
+            if self.coloned { ":" } else { "" },
+            self.name,
+            self.params.join(", "),
+            self.body
+        )
+    }
+}
+
+
+
+#[derive(Debug, Clone)]
+pub struct MetaMethod {
+    name: MetaMethodName,
+    params: Vec<String>,
+    body: Box<Stmt>,
+}
+
+#[derive(Debug, Clone)]
+pub enum MetaMethodName {
+    Ident(String),
+    Op(Op)
+}
+
+impl MetaMethodName {
+    pub fn to_name(&self) -> &str {
+        match self {
+            Self::Ident(s) => s,
+            Self::Op(s) => s.to_name()
+        }
+    }
+}
+
+impl Display for MetaMethodName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ident(s) => write!(f, "@{}", s),
+            Self::Op(o) => write!(f, "{}", o)
+        }
+    }
+}
+
+impl Display for MetaMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}({}) {}",
+            self.name,
+            self.params.join(", "),
+            self.body
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Op {
+    BinOp(BinOp),
+    CmpOp(CmpOp),
+    Index,
+    New
+}
+
+impl Op {
+    pub fn to_name(&self) -> &'static str {
+        use self::BinOp::*;
+        use self::CmpOp::*;
+        use Op::*;
+        match self {
+            BinOp(Add) => "add",
+            BinOp(Sub) => "sub",
+            BinOp(Mul) => "mul",
+            BinOp(Div) => "div",
+            CmpOp(Lt) => "lt",
+            CmpOp(Gt) => "gt",
+            CmpOp(Lte) => "lte",
+            CmpOp(Gte) => "gte",
+            CmpOp(Eq) => "eq",
+            CmpOp(NEq) => "ne",
+            Index => "index",
+            New => "new",
+        }
+    }
+}
+
+impl Display for Op {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Op::BinOp(op) => write!(f, "{}", op),
+            Op::CmpOp(op) => write!(f, "{}", op),
+            Op::Index => write!(f, "[]"),
+            Op::New => write!(f, "new"),
+        }
+    }
 }
 
 impl Display for Stmt {
@@ -181,6 +286,30 @@ impl Display for Stmt {
             Stmt::Return(value) => {
                 write!(f, "return {}", value)?;
             }
+            Stmt::Class {
+                name,
+                methods,
+                meta_methods,
+                super_class
+            } => {
+                write!(
+                    f,
+                    "class {} {} {{\n",
+                    name,
+                    if let Some(super_class) = super_class {
+                        format!(": {}", super_class)
+                    } else {
+                        "".to_owned()
+                    }
+                )?;
+                for method in methods {
+                    write!(f, "{}", method)?;
+                }
+                for meta_method in meta_methods {
+                    write!(f, "{}", meta_method)?;
+                }
+                write!(f, "}}")?;
+            }
         }
         Ok(())
     }
@@ -223,6 +352,9 @@ pub enum Expr {
     Member(Box<Expr>, String),
     Array(Vec<Expr>),
     Table(Vec<(Expr, Expr)>),
+    New(Box<Expr>, Vec<Expr>),
+    Super,
+    SuperMeta
 }
 
 fn join<T: Display>(vec: &Vec<T>, sep: &str) -> String {
@@ -263,6 +395,9 @@ impl Display for Expr {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            Expr::New(func, args) => write!(f, "new {}({})", func, join(args, ", ")),
+            Expr::Super => write!(f, "super"),
+            Expr::SuperMeta => write!(f, "supermeta"),
         }
     }
 }
@@ -301,8 +436,14 @@ pub enum OpCode {
     Concat,
     Dup(usize),
     Swap2,
+    Rot3,
     NewArray(usize),
     NewTable,
+    SetMeta,
+    GetMeta,
+    SetProto(bool),
+    GetProto,
+    New(usize)
 }
 
 #[derive(Debug)]
@@ -342,7 +483,7 @@ pub enum Value {
     Integer(i64),
     Bool(bool),
     String(Rc<String>),
-    BuiltInFunc(Rc<dyn Fn(Args) -> crate::vm::RuntimeResult<Value>>),
+    BuiltInFunc(Rc<dyn Fn(Args, &mut crate::vm::VM) -> crate::vm::RuntimeResult<Value>>),
     Func(Rc<Func>),
     Table(Rc<RefCell<Table>>),
     Array(Rc<RefCell<Vec<Value>>>),
@@ -415,7 +556,7 @@ impl PartialEq for Value {
             (Bool(n1), Bool(n2)) => *n1 == *n2,
             (BuiltInFunc(n1), BuiltInFunc(n2)) => Rc::ptr_eq(n1, n2),
             (Func(n1), Func(n2)) => Rc::ptr_eq(n1, n2),
-            (String(n1), String(n2)) => n1 == n2,
+            (String(n1), String(n2)) => Rc::ptr_eq(n1, n2) || **n1 == **n2,
             (Table(n1), Table(n2)) => Rc::ptr_eq(n1, n2),
             (Array(n1), Array(n2)) => Rc::ptr_eq(n1, n2),
             (Set(n1), Set(n2)) => Rc::ptr_eq(n1, n2),
@@ -505,6 +646,9 @@ pub struct Parser {
     position: usize,
     // 用于判断return的合法性
     in_func: usize,
+    // 用于判断super的合法性
+    in_method: bool,
+    is_derived_class: bool
 }
 
 impl Parser {
@@ -513,6 +657,8 @@ impl Parser {
             tokens,
             position: 0,
             in_func: 0,
+            in_method: false,
+            is_derived_class: false
         }
     }
 
@@ -613,6 +759,9 @@ impl Parser {
                 self.expect(Token::Semicolon)?;
                 Ok(res)
             }
+            Token::Class => {
+                self.parse_class()
+            }
             _ => {
                 let left: Expr = self.parse_expr()?;
                 let res = match self.peek_assign_op() {
@@ -693,6 +842,16 @@ impl Parser {
         Ok(Stmt::Block(stmts))
     }
 
+    fn parse_block_for_method(&mut self) -> ParseResult<Stmt> {
+        self.in_func += 1;
+        let old_in_method = self.in_method;
+        self.in_method = true;
+        let res = self.parse_block()?;
+        self.in_method = old_in_method;
+        self.in_func -= 1;
+        Ok(res)
+    }
+
     fn parse_let_stmt(&mut self) -> ParseResult<Stmt> {
         self.advance();
         let name = match self.advance() {
@@ -713,13 +872,12 @@ impl Parser {
         }
     }
 
-    fn parse_fn(&mut self) -> ParseResult<Expr> {
-        self.advance();
+    fn parse_params(&mut self) -> ParseResult<Vec<String>> {
         self.expect(Token::LParen)?;
-        let mut args = Vec::new();
+        let mut params = Vec::new();
         while *self.peek() != Token::RParen && *self.peek() != Token::Eof {
-            let arg = self.expect_ident()?;
-            args.push(arg);
+            let param = self.expect_ident()?;
+            params.push(param);
             let token = self.peek();
             if *token == Token::Comma {
                 self.advance();
@@ -728,10 +886,88 @@ impl Parser {
             }
         }
         self.expect(Token::RParen)?;
+        Ok(params)
+    }
+
+    fn parse_fn(&mut self) -> ParseResult<Expr> {
+        self.advance();
+        let params = self.parse_params()?;
         self.in_func += 1;
         let block = self.parse_block()?;
         self.in_func -= 1;
-        Ok(Expr::Fn(args, Box::new(block)))
+        Ok(Expr::Fn(params, Box::new(block)))
+    }
+
+    fn parse_class(&mut self) -> ParseResult<Stmt> {
+        self.advance();
+        let name = self.expect_ident()?;
+        let old_is_derived = self.is_derived_class;
+        let base = if *self.peek() == Token::Colon {
+            self.advance();
+            self.is_derived_class = true;
+            Some(self.expect_ident()?)
+        } else {
+            self.is_derived_class = false;
+            None
+        };
+        self.expect(Token::LBrace)?;
+        let mut methods = Vec::new();
+        let mut meta_methods = Vec::new();
+        while !matches!(*self.peek(), Token::RBrace | Token::Eof) {
+            match self.peek() {
+                Token::Colon => {
+                    self.advance();
+                    let name = self.expect_ident()?;
+                    let params = self.parse_params()?;
+                    let block = self.parse_block_for_method()?;
+                    methods.push(Method { name, params, body: Box::new(block), coloned: true });
+                }
+                Token::Ident(name) => {
+                    let name = name.clone();
+                    self.advance();
+                    let params = self.parse_params()?;
+                    self.in_func += 1;
+                    let block = self.parse_block()?;
+                    self.in_func -= 1;
+                    methods.push(Method { name, params, body: Box::new(block), coloned: false });
+                }
+                Token::AtMark => {
+                    self.advance();
+                    let name = self.expect_ident()?;
+                    let params = self.parse_params()?;
+                    let block = self.parse_block_for_method()?;
+                    meta_methods.push(MetaMethod { name: MetaMethodName::Ident(name), params, body: Box::new(block) });
+                }
+                Token::Plus | Token::Minus | Token::Star | Token::Slash |
+                Token::Eq | Token::Gt | Token::Lt | Token::Gte | Token::Lte |
+                Token::New => {
+                    // Meta methods
+                    let op: Op = match self.advance() {
+                        Token::Plus => Op::BinOp(BinOp::Add),
+                        Token::Minus => Op::BinOp(BinOp::Sub),
+                        Token::Star => Op::BinOp(BinOp::Mul),
+                        Token::Slash => Op::BinOp(BinOp::Div),
+                        Token::Eq => Op::CmpOp(CmpOp::Eq),
+                        Token::NEq => Op::CmpOp(CmpOp::NEq),
+                        Token::Gt => Op::CmpOp(CmpOp::Gt),
+                        Token::Lt => Op::CmpOp(CmpOp::Lt),
+                        Token::Gte => Op::CmpOp(CmpOp::Gte),
+                        Token::Lte => Op::CmpOp(CmpOp::Lte),
+                        Token::New => Op::New,
+                        _ => unreachable!()
+                    };
+                    let params = self.parse_params()?;
+                    let block = self.parse_block_for_method()?;
+                    meta_methods.push(MetaMethod { name: MetaMethodName::Op(op), params, body: Box::new(block) });
+                },
+                tok => {
+                    return Err(ParseError::UnexpectedToken(tok.to_string()));
+                }
+            }
+        }
+        self.expect(Token::RBrace)?;
+        self.is_derived_class = old_is_derived;
+        Ok(Stmt::Class { name, meta_methods, methods, super_class: base })
     }
 
     fn parse_concat_op(&mut self) -> ParseResult<Expr> {
@@ -739,7 +975,10 @@ impl Parser {
         while *self.peek() == Token::Concat {
             self.advance();
             let right = self.parse_or_op()?;
-            left = Expr::ConcatOp { left: Box::new(left), right: Box::new(right) };
+            left = Expr::ConcatOp {
+                left: Box::new(left),
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -835,10 +1074,9 @@ impl Parser {
                 self.advance();
                 self.parse_unary()
             }
-            None => self.parse_call(),
+            None => self.parse_call_method_member_index(false),
         }
     }
-
     fn parse_args(&mut self) -> ParseResult<Vec<Expr>> {
         let mut args = Vec::new();
         while *self.peek() != Token::RParen && *self.peek() != Token::Eof {
@@ -855,7 +1093,7 @@ impl Parser {
         Ok(args)
     }
 
-    pub fn parse_call(&mut self) -> ParseResult<Expr> {
+    pub fn parse_call_method_member_index(&mut self, stops_if_call: bool) -> ParseResult<Expr> {
         let mut left = self.parse_atom()?;
         while matches!(
             *self.peek(),
@@ -865,6 +1103,9 @@ impl Parser {
                 Token::LParen => {
                     let args = self.parse_args()?;
                     left = Expr::Call(Box::new(left), args);
+                    if stops_if_call {
+                        break;
+                    }
                 }
                 Token::Colon => {
                     let method_name = self.expect_ident()?;
@@ -878,7 +1119,12 @@ impl Parser {
                     left = Expr::Index(Box::new(left), Box::new(index));
                 }
                 Token::Dot => {
-                    let prop = self.expect_ident()?;
+                    let prop = if *self.peek() == Token::New {
+                        self.advance();
+                        String::from("new")
+                    } else {
+                        self.expect_ident()?
+                    };
                     left = Expr::Member(Box::new(left), prop);
                 }
                 _ => unreachable!(),
@@ -961,6 +1207,27 @@ impl Parser {
                 self.expect(Token::RBrace)?;
                 Ok(Expr::Table(items))
             }
+            Token::New => {
+                self.advance();
+                let Expr::Call(cls, args) = self.parse_call_method_member_index(true)? else {
+                    unreachable!()
+                };
+                Ok(Expr::New(cls, args))
+            }
+            Token::Super => {
+                self.advance();
+                if !self.in_method || !self.is_derived_class {
+                    return Err(ParseError::UnexpectedToken("super".to_string()));
+                }
+                Ok(Expr::Super)
+            }
+            Token::SuperMeta => {
+                self.advance();
+                if !self.in_method || !self.is_derived_class {
+                    return Err(ParseError::UnexpectedToken("supermeta".to_string()));
+                }
+                Ok(Expr::SuperMeta)
+            }
             other => {
                 if matches!(other, Token::Eof) {
                     Err(ParseError::UnexpectedEof)
@@ -976,6 +1243,7 @@ pub struct Compiler {
     code: Vec<OpCode>,
     fn_codes: Vec<Vec<OpCode>>,
     symbol_tables: Vec<HashMap<String, usize>>,
+    first_param: String
 }
 
 impl Compiler {
@@ -984,6 +1252,7 @@ impl Compiler {
             code: Vec::new(),
             fn_codes: Vec::new(),
             symbol_tables: Vec::new(),
+            first_param: String::new()
         }
     }
 
@@ -1074,6 +1343,9 @@ impl Compiler {
                     value,
                 ),
             },
+            Stmt::Class { name, methods, meta_methods, super_class } => {
+                self.compile_class(name, methods, meta_methods, super_class);
+            }
         }
     }
 
@@ -1170,9 +1442,9 @@ impl Compiler {
         let jmp_idx = self.context().len();
         self.push(OpCode::JmpIfNot(usize::MAX));
         self.compile_stmt(then_branch);
-        self.context()[jmp_idx] = OpCode::JmpIfNot(self.context().len());
         if let Some(stmts) = else_branch {
             let leave_jmp_idx = self.context().len();
+            self.context()[jmp_idx] = OpCode::JmpIfNot(self.context().len() + 1);
             self.push(OpCode::Jmp(usize::MAX));
             self.compile_stmt(stmts);
             self.context()[leave_jmp_idx] = OpCode::Jmp(self.context().len());
@@ -1181,6 +1453,91 @@ impl Compiler {
 
     fn compile_let_expr(&mut self, name: &String, value: &Expr) {
         self.compile_compound_assign_expr(name, None, value);
+    }
+
+    fn compile_class(&mut self, name: &String, methods: &Vec<Method>, meta_methods: &Vec<MetaMethod>, super_class: &Option<String>) {
+        self.push(OpCode::NewTable); // [原型]
+
+        for method in methods {
+            self.push(OpCode::Push(Value::from(method.name.clone())));
+            let params = if method.coloned {
+                let mut v = vec![String::from("self")];
+                v.extend(method.params.clone());
+                v
+            } else {
+                method.params.clone()
+            };
+            self.compile_fn(&params, &method.body, method.coloned);
+            self.push(OpCode::IndexAssign(true));
+        }
+        
+        self.push(OpCode::Dup(1)); // [原型 原型]
+        self.push(OpCode::NewTable); // [原型 原型 元表]
+
+        for meta_method in meta_methods {
+            self.push(OpCode::Push(Value::from(meta_method.name.to_name())));
+            self.compile_fn(&meta_method.params, &meta_method.body, true);
+            self.push(OpCode::IndexAssign(true));
+        }
+
+
+        if let Some(super_class) = super_class {
+            self.compile_expr(&Expr::Ident(super_class.clone())); // [原型 原型 元表 父类原型]
+            self.push(OpCode::Dup(2)); // [原型 原型 元表 父类原型 元表 父类原型]
+            self.push(OpCode::GetMeta); // [原型 原型 元表 父类原型 元表 父类元表]
+            self.push(OpCode::SetProto(false)); // [原型 原型 元表 父类原型]
+            self.push(OpCode::Rot3); // [原型 父类原型 原型 元表]
+            self.push(OpCode::SetMeta); // [原型 父类原型]
+            self.push(OpCode::SetProto(true)) // [原型]
+        } else {
+            self.push(OpCode::SetMeta); // [原型]
+        }
+        
+
+        let mut local_layer_idx = None;
+        for (lev, table) in self.symbol_tables.iter().enumerate().rev() {
+            if let Some(idx) = table.get(name) {
+                local_layer_idx = Some((self.symbol_tables.len() - lev, *idx));
+                break;
+            }
+        }
+        if let Some((lev, idx)) = local_layer_idx {
+            self.push(OpCode::StoreLocal(lev, idx));
+        } else {
+            self.push(OpCode::StoreGlobal(name.clone()));
+        }
+    }
+
+    fn compile_fn(&mut self, names: &Vec<String>, block: &Box<Stmt>, in_method: bool) {
+        let old = if in_method {
+            Some(std::mem::replace(&mut self.first_param, names[0].clone()))
+        } else {
+            None
+        };
+        self.enter_fn();
+        self.symbol_tables.push(HashMap::new());
+        for name in names {
+            self.add_name(name);
+        }
+        if let Stmt::Block(stmts) = &**block {
+            for stmt in stmts {
+                if let Stmt::Let { name, value: _ } = stmt {
+                    self.add_name(name);
+                }
+            }
+            println!("{:?}", self.symbol_tables);
+            for stmt in stmts {
+                self.compile_stmt(stmt);
+            }
+        } else {
+            panic!("函数只能带块")
+        }
+        self.exit_block();
+        let opcodes = self.exit_fn();
+        if in_method {
+            self.first_param = old.unwrap();
+        }
+        self.push(OpCode::PushFn(names.len(), opcodes));
     }
 
     fn compile_expr(&mut self, expr: &Expr) {
@@ -1258,28 +1615,15 @@ impl Compiler {
                 }
                 self.push(OpCode::Call(args.len()));
             }
+            Expr::New(expr, args) => {
+                self.compile_expr(expr);
+                for arg in args {
+                    self.compile_expr(arg);
+                }
+                self.push(OpCode::New(args.len()));
+            }
             Expr::Fn(names, block) => {
-                self.enter_fn();
-                self.symbol_tables.push(HashMap::new());
-                for name in names {
-                    self.add_name(name);
-                }
-                if let Stmt::Block(stmts) = &**block {
-                    for stmt in stmts {
-                        if let Stmt::Let { name, value: _ } = stmt {
-                            self.add_name(name);
-                        }
-                    }
-                    println!("{:?}", self.symbol_tables);
-                    for stmt in stmts {
-                        self.compile_stmt(stmt);
-                    }
-                } else {
-                    panic!("函数只能带块")
-                }
-                self.exit_block();
-                let opcodes = self.exit_fn();
-                self.push(OpCode::PushFn(names.len(), opcodes));
+                self.compile_fn(names, block, false);
             }
             Expr::Index(container, index) => {
                 self.compile_expr(container);
@@ -1320,6 +1664,15 @@ impl Compiler {
                 self.compile_expr(left);
                 self.compile_expr(right);
                 self.push(OpCode::Concat);
+            },
+            Expr::Super => {
+                self.compile_expr(&Expr::Ident(self.first_param.clone()));
+                self.push(OpCode::GetProto);
+            },
+            Expr::SuperMeta => {
+                self.compile_expr(&Expr::Ident(self.first_param.clone()));
+                self.push(OpCode::GetMeta);
+                self.push(OpCode::GetProto);
             }
         }
     }

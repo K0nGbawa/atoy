@@ -1,21 +1,15 @@
 #![allow(non_snake_case)]
 use std::{
-    cell::RefCell,
-    collections::{HashMap, HashSet},
-    format,
-    io::Write,
-    print, println,
-    rc::Rc,
+    cell::RefCell, collections::{HashMap, HashSet}, format, io::Write, print, println, rc::Rc, vec,
 };
 
 use atoy_macros::atoy_function;
 
 use crate::{
-    parser::{Table, Value},
-    vm::{Args, RuntimeError, ValueType},
+    ops::{call, internal_call, toString}, parser::{Func, Table, Value}, vm::{Args, RuntimeError, RuntimeResult, VM, ValueType},
 };
 
-fn try_add_fn_info(error: RuntimeError, name: &'static str) -> RuntimeError {
+pub fn try_add_fn_info(error: RuntimeError, name: &'static str) -> RuntimeError {
     match error {
         crate::vm::RuntimeError::TypeError {
             expected,
@@ -58,10 +52,15 @@ pub fn input(prompt: Option<String>) -> String {
 
 pub fn repr_inner(value: &Value, seen: &mut HashMap<Value, usize>) -> String {
     let len = seen.len();
-    if let Some(id) = seen.get(value) {
-        return format!("#{}", id);
-    } else {
-        seen.insert(value.clone(), len);
+    match value {
+        Value::Array(_) | Value::Table(_) => {
+            if let Some(id) = seen.get(value) {
+                return format!("#{}", id);
+            } else {
+                seen.insert(value.clone(), len);
+            }
+        }
+        _ => {}
     }
     match value {
         Value::Array(rc) => {
@@ -80,7 +79,7 @@ pub fn repr_inner(value: &Value, seen: &mut HashMap<Value, usize>) -> String {
                 rc.borrow()
                     .data
                     .iter()
-                    .map(|(k, v)| format!("[{}]: {}", k, repr_inner(v, seen)))
+                    .map(|(k, v)| format!("[{}]: {}", repr_inner(k, seen), repr_inner(v, seen)))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
@@ -157,6 +156,31 @@ pub fn Array_pop(vector: Rc<RefCell<Vec<Value>>>) -> Value {
     vector.borrow_mut().pop().unwrap_or(Value::None)
 }
 
+#[atoy_function(method = map)]
+pub fn Array_map(vector: Rc<RefCell<Vec<Value>>>, func: &Value, vm: &mut VM) -> RuntimeResult<Value> {
+    let new_vector = vector.borrow().iter()
+        .enumerate()
+        .map(|(i, v)| {
+            internal_call(&func, vec![v.clone(), Value::from(i as u32)], vm)
+        })
+        .collect::<RuntimeResult<Vec<_>>>()?;
+    Ok(Value::Array(Rc::new(RefCell::new(new_vector))))
+}
+
+#[atoy_function(method = join)]
+pub fn Array_join(vector: Rc<RefCell<Vec<Value>>>, separator: String, vm: &mut VM) -> RuntimeResult<Value> {
+    let strs_res: RuntimeResult<Vec<String>> = vector.borrow().iter().map(|v| {
+        let val = toString(v, vm)?;
+        if let Value::String(s) = &val {
+            Ok((**s).clone())
+        } else {
+            Err(RuntimeError::TypeError { expected: ValueType::String, found: ValueType::from(&val), thrower: Some("Array.join") })
+        }
+    }).collect();
+    let strs = strs_res?;
+    Ok(Value::from(strs.join(&separator)))
+}
+
 type RRTable = Rc<RefCell<Table>>;
 
 #[atoy_function]
@@ -197,13 +221,4 @@ pub fn getMetatableOf(target: RRTable) -> Value {
     }
 }
 
-#[atoy_function]
-pub fn index(target: RRTable, key: &Value) -> Value {
-    let tref = target.borrow();
-    if let Some(value) = tref.data.get(key) {
-        return value.clone();
-    } else if let Some(proto) = &tref.prototype {
-        return index(proto.clone(), key);
-    }
-    Value::None
-}
+

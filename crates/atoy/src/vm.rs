@@ -1,8 +1,9 @@
 use atoy_macros::{register_fns, register_methods};
 
 use crate::{
-    builtin::{self, index, repr},
-    parser::{Func, OpCode, Table, Value},
+    builtin::{self, repr, setMetatableOf, setPrototypeOf}, ops::{ self,
+        call, index_table, internal_call, ops_add, ops_concat, ops_div, ops_eq, ops_gt, ops_gte, ops_lt, ops_lte, ops_mod, ops_mul, ops_ne, ops_sub,
+    }, parser::{Func, OpCode, Table, Value},
 };
 use std::{
     cell::RefCell,
@@ -11,7 +12,7 @@ use std::{
     ops::RangeInclusive,
     panic, println,
     rc::Rc,
-    write,
+    vec, write,
 };
 
 macro_rules! impl_try_from_value {
@@ -114,7 +115,7 @@ impl_try_from_value_for_rc_refcell!(Table, Table);
 
 impl<T> From<T> for Value
 where
-    T: Fn(Args) -> RuntimeResult<Value> + 'static,
+    T: Fn(Args, &mut VM) -> RuntimeResult<Value> + 'static,
 {
     fn from(value: T) -> Self {
         Self::BuiltInFunc(Rc::new(value))
@@ -151,6 +152,12 @@ impl From<&str> for Value {
 impl From<bool> for Value {
     fn from(value: bool) -> Self {
         Self::Bool(value)
+    }
+}
+
+impl From<Table> for Value {
+    fn from(value: Table) -> Self {
+        Self::Table(Rc::new(RefCell::new(value)))
     }
 }
 
@@ -208,6 +215,7 @@ impl Args {
     }
 }
 
+#[derive(Clone)]
 pub enum ValueType {
     Integer,
     Float,
@@ -220,6 +228,18 @@ pub enum ValueType {
     Union(Box<ValueType>, Vec<ValueType>),
     Two(Box<ValueType>, Box<ValueType>),
     None,
+}
+
+impl ValueType {
+    pub fn float_or_int_tuple() -> Self {
+        Self::two(
+            Self::Union(Box::new(Self::Float), vec![Self::Integer]),
+            Self::Union(Box::new(Self::Float), vec![Self::Integer]),
+        )
+    }
+    pub fn two(a: ValueType, b: ValueType) -> Self {
+        Self::Two(Box::new(a), Box::new(b))
+    }
 }
 
 impl From<&Value> for ValueType {
@@ -273,7 +293,7 @@ impl Debug for ValueType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ExpectedParamCount {
     Constant(usize),
     Range(RangeInclusive<usize>),
@@ -288,7 +308,7 @@ impl Display for ExpectedParamCount {
     }
 }
 
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum RuntimeError {
     #[error("ParamError: Function takes {expected} args but {found} were provided")]
     ParamError {
@@ -311,155 +331,10 @@ pub enum RuntimeError {
 
 pub type RuntimeResult<T> = Result<T, RuntimeError>;
 
-macro_rules! gen_arithop {
+macro_rules! gen_eq_ne_op {
     ($a: expr, $b: expr, $op:tt) => {
-        match ($a, $b) {
-            (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a $op b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a $op b)),
-            (Value::Integer(a), Value::Float(b)) => Ok(Value::Float((a as f64) $op b)),
-            (Value::Float(a), Value::Integer(b)) => Ok(Value::Float(a $op (b as f64))),
-            (a, b) => {
-                Err(RuntimeError::TypeError {
-                    expected: ValueType::Two(
-                        Box::new(ValueType::Union(Box::new(ValueType::Float), vec![ValueType::Integer])),
-                        Box::new(ValueType::Union(Box::new(ValueType::Float), vec![ValueType::Integer]))
-                    ),
-                    found: ValueType::from((&a, &b)),
-                    thrower: None
-                })
-            }
-        }
+        Ok(Value::from($a $op $b))
     };
-}
-
-macro_rules! gen_cmpop {
-    ($a: expr, $b: expr, $op:tt) => {
-        match ($a, $b) {
-            (Value::Integer(a), Value::Integer(b)) => Ok(Value::Bool(a $op b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a $op b)),
-            (Value::Integer(a), Value::Float(b)) => Ok(Value::Bool((a as f64) $op b)),
-            (Value::Float(a), Value::Integer(b)) => Ok(Value::Bool(a $op (b as f64))),
-            (a, b) => {
-                Err(RuntimeError::TypeError {
-                    expected: ValueType::Two(
-                        Box::new(ValueType::Union(Box::new(ValueType::Float), vec![ValueType::Integer])),
-                        Box::new(ValueType::Union(Box::new(ValueType::Float), vec![ValueType::Integer]))
-                    ),
-                    found: ValueType::from((&a, &b)),
-                    thrower: None
-                })
-            }
-        }
-    };
-}
-
-macro_rules! gen_concatop {
-    ($a: expr, $b: expr, $op:tt) => {{
-        match (&$a, &$b) { // 这里下面要重新来一波细粒度匹配，不能直接消费两个Value，所以写成引用
-            (
-                Value::Integer(_) | Value::Float(_) | Value::String(_) | Value::Bool(_) | Value::None,
-                Value::Integer(_) | Value::Float(_) | Value::String(_) | Value::Bool(_) | Value::None) => {
-                let a = match $a {
-                    Value::Integer(i) => i.to_string(),
-                    Value::Float(f) => f.to_string(),
-                    Value::String(s) => (*s).clone(),
-                    Value::Bool(b) => b.to_string(),
-                    Value::None => "None".to_owned(),
-                    _ => unreachable!()
-                };
-                let b = match $b {
-                    Value::Integer(i) => &i.to_string(),
-                    Value::Float(f) => &f.to_string(),
-                    Value::String(s) => &(*s).clone(),
-                    Value::Bool(b) => &b.to_string(),
-                    Value::None => "None",
-                    _ => unreachable!()
-                };
-                Ok(Value::String(Rc::new(a + b)))
-            }
-            (a, b) => {
-                Err(RuntimeError::TypeError {
-                    expected: ValueType::Two(
-                        Box::new(
-                            ValueType::Union(
-                                Box::new(ValueType::None),
-                                vec![ValueType::Integer, ValueType::Float, ValueType::String, ValueType::Bool]
-                            )
-                        ),
-                        Box::new(
-                            ValueType::Union(
-                                Box::new(ValueType::None),
-                                vec![ValueType::Integer, ValueType::Float, ValueType::String, ValueType::Bool]
-                            )
-                        ),
-                    ),
-                    found: ValueType::from((a, b)),
-                    thrower: None
-                })
-            }
-        }
-    }};
-}
-
-macro_rules! gen_binop {
-    ($vm: expr, $macro: ident, $magic_method: literal, $op:tt) => {{
-        let b = $vm.stack.pop().expect("stack underflow");
-        let a = $vm.stack.pop().expect("stack underflow");
-        if let Value::Table(t) = &a {
-            if let Some(meta) = &t.borrow().meta {
-                let func = index(meta.clone(), &Value::from($magic_method));
-                if func != Value::None {
-                    match func {
-                        Value::Func(func) => {
-                            match $vm.call(&func, &vec![a.clone(), b]) {
-                                Ok(ret) => $vm.stack.push(ret),
-                                Err(e) => {
-                                    $vm.throw(e);
-                                }
-                            };
-                        }
-                        Value::BuiltInFunc(func) => {
-                            match func(Args::new(vec![a.clone(), b])) {
-                                Ok(ret) => $vm.stack.push(ret),
-                                Err(e) => {
-                                    $vm.throw(e);
-                                    break;
-                                }
-                            };
-                        }
-                        _ => {
-                            $vm.throw(RuntimeError::TypeError {
-                                expected: ValueType::Function,
-                                found: ValueType::from(&func),
-                                thrower: Some(concat!("table.[[metatable]].", $magic_method)),
-                            });
-                            break;
-                        }
-                    }
-                } else {
-                    $vm.throw(RuntimeError::OperatorNotSupportedError {
-                        op: stringify!($op).to_owned(),
-                        table: a.clone(),
-                    });
-                    break;
-                }
-            } else {
-                $vm.throw(RuntimeError::OperatorNotSupportedError {
-                    op: stringify!($op).to_owned(),
-                    table: a.clone(),
-                });
-                break;
-            }
-        } else {
-            match $macro!(a, b, $op) {
-                Ok(v) => $vm.stack.push(v),
-                Err(e) => {
-                    $vm.throw(e);
-                    break;
-                }
-            }
-        };
-    }};
 }
 
 #[derive(Debug)]
@@ -494,6 +369,7 @@ impl VM {
     pub fn new(code: Vec<OpCode>) -> Self {
         let mut arr_meta_raw = Table::new();
         let mut str_meta_raw = Table::new();
+        let mut ops_raw = Table::new();
 
         register_methods!(
             &mut str_meta_raw,
@@ -512,7 +388,27 @@ impl VM {
                 builtin::Array_len,
                 builtin::Array_push,
                 builtin::Array_pop,
-                builtin::Array_new
+                builtin::Array_new,
+                builtin::Array_join,
+                builtin::Array_map
+            )
+        );
+        
+        register_methods!(
+            &mut ops_raw,
+            (
+                ops::ops_add,
+                ops::ops_concat,
+                ops::ops_div,
+                ops::ops_eq,
+                ops::ops_gt,
+                ops::ops_gte,
+                ops::ops_lt,
+                ops::ops_lte,
+                ops::ops_mod,
+                ops::ops_mul,
+                ops::ops_ne,
+                ops::ops_sub
             )
         );
 
@@ -534,6 +430,10 @@ impl VM {
             String::from("String"),
             Value::Table(instance.string_prototype.clone()),
         );
+        instance.globals.insert(
+            String::from("Ops"),
+            Value::Table(Rc::new(RefCell::new(ops_raw))),
+        );
 
         register_fns!(
             &mut instance,
@@ -548,26 +448,28 @@ impl VM {
                 builtin::clearMetatableOf,
                 builtin::getPrototypeOf,
                 builtin::setPrototypeOf,
-                builtin::clearPrototypeOf
+                builtin::clearPrototypeOf,
+                ops::toString
             )
         );
 
         return instance;
     }
-    pub fn register_func(&mut self, name: &str, func: Rc<dyn Fn(Args) -> RuntimeResult<Value>>) {
+    pub fn register_func(
+        &mut self,
+        name: &str,
+        func: Rc<dyn Fn(Args, &mut Self) -> RuntimeResult<Value>>,
+    ) {
         self.globals
             .insert(name.to_owned(), Value::BuiltInFunc(func));
     }
-    pub fn run(&mut self, codes: Option<&Vec<OpCode>>) -> Option<Value> {
+    pub fn run(&mut self, codes: Option<&Vec<OpCode>>) -> RuntimeResult<Value> {
         let mut ip = 0;
         while ip < codes.unwrap_or(&self.code).len() {
             if let Some(error) = &self.to_throw {
-                println!("RuntimeError:\n  {}", error);
-                self.to_throw = None;
-                return None;
+                return Err(error.clone());
             }
             let op = &codes.unwrap_or(&self.code)[ip];
-            ip += 1;
             // println!(
             //     "|\t\t\t\t\t栈\t[{}]",
             //     self.stack
@@ -590,12 +492,13 @@ impl VM {
             //     }
             // }
             // println!("| {} {:?}", ip, op);
+            ip += 1;
             match op {
                 OpCode::Push(value) => self.stack.push(value.clone()),
-                OpCode::Add => gen_binop!(self, gen_arithop, "add", +),
-                OpCode::Sub => gen_binop!(self, gen_arithop, "sub", -),
-                OpCode::Mul => gen_binop!(self, gen_arithop, "mul", *),
-                OpCode::Div => gen_binop!(self, gen_arithop, "div", /),
+                OpCode::Add => self.bin_op(ops_add)?,
+                OpCode::Sub => self.bin_op(ops_sub)?,
+                OpCode::Mul => self.bin_op(ops_mul)?,
+                OpCode::Div => self.bin_op(ops_add)?,
                 OpCode::Neg => {
                     let v = self.stack.pop().expect("Stack underflow");
                     let val = match v {
@@ -612,13 +515,13 @@ impl VM {
                     };
                     self.stack.push(val)
                 }
-                OpCode::Eq => gen_binop!(self, gen_cmpop, "eq", ==),
-                OpCode::NEq => gen_binop!(self, gen_cmpop, "ne", !=),
-                OpCode::Gt => gen_binop!(self, gen_cmpop, "gt", >),
-                OpCode::Lt => gen_binop!(self, gen_cmpop, "lt", <),
-                OpCode::Gte => gen_binop!(self, gen_cmpop, "gte", >=),
-                OpCode::Lte => gen_binop!(self, gen_cmpop, "lte", <=),
-                OpCode::Concat => gen_binop!(self, gen_concatop, "concat", +),
+                OpCode::Eq => self.bin_op(ops_eq)?,
+                OpCode::NEq => self.bin_op(ops_ne)?,
+                OpCode::Gt => self.bin_op(ops_gt)?,
+                OpCode::Lt => self.bin_op(ops_lt)?,
+                OpCode::Gte => self.bin_op(ops_gte)?,
+                OpCode::Lte => self.bin_op(ops_lte)?,
+                OpCode::Concat => self.bin_op(ops_concat)?,
                 OpCode::And(idx) => {
                     let v = self.stack.last().expect("Stack underflow");
                     if v.is_truthy() {
@@ -667,33 +570,49 @@ impl VM {
                 OpCode::Call(arg_count) => {
                     let args = self.stack.split_off(self.stack.len() - arg_count);
                     let callee = self.stack.pop().expect("stack underflow");
-                    match callee {
-                        Value::BuiltInFunc(func) => {
-                            let ret = match func(Args::new(args)) {
-                                Ok(ret) => ret,
-                                Err(e) => {
-                                    self.throw(e);
-                                    break;
-                                }
+                    let v = internal_call(&callee, args, self)?;
+                    self.stack.push(v);
+                }
+                OpCode::New(arg_count) => {
+                    let mut args = self.stack.split_off(self.stack.len() - arg_count);
+                    let cls = self.stack.pop().expect("stack underflow");
+                    match cls {
+                        Value::Table(cls) => {
+                            let mut new_obj = Table::new();
+                            let meta = {
+                                cls.borrow()
+                                    .meta
+                                    .as_ref()
+                                    .expect("Class should have a metatable")
+                                    .clone()
                             };
-                            self.stack.push(ret);
+                            let meta_ref = meta.borrow();
+                            let new_method = meta_ref.data.get(&Value::from("new"));
+                            new_obj.meta = Some(meta.clone());
+                            new_obj.prototype = Some(cls);
+                            args.insert(0, Value::from(new_obj));
+                            let res = match new_method {
+                                Some(Value::Func(func)) => self.call(func, &args),
+                                Some(Value::BuiltInFunc(fp)) => fp(Args::new(args.clone()), self),
+                                Some(other) => Err(RuntimeError::TypeError {
+                                    expected: ValueType::Function,
+                                    found: ValueType::from(other),
+                                    thrower: Some("New"),
+                                }),
+                                None => Err(RuntimeError::OperatorNotSupportedError {
+                                    op: "new".to_owned(),
+                                    table: args[0].clone(),
+                                }),
+                            };
+                            res?;
+                            let obj = args.into_iter().next().unwrap();
+                            self.stack.push(obj);
                         }
-                        Value::Func(func) => match self.call(&func, &args) {
-                            Ok(v) => {
-                                self.stack.push(v);
-                            }
-                            Err(e) => {
-                                self.throw(e);
-                                break;
-                            }
-                        },
-                        _ => {
-                            self.throw(RuntimeError::TypeError {
-                                expected: ValueType::Function,
-                                found: ValueType::from(&callee),
-                                thrower: Some("Function call"),
-                            });
-                        }
+                        callee => self.throw(RuntimeError::TypeError {
+                            expected: ValueType::Table,
+                            found: ValueType::from(&callee),
+                            thrower: Some("New"),
+                        }),
                     }
                 }
                 OpCode::LoadLocal(lev, idx) => {
@@ -718,14 +637,14 @@ impl VM {
                 ))),
                 OpCode::Ret => {
                     self.locals.pop();
-                    return self.stack.pop();
+                    return Ok(self.stack.pop().unwrap_or(Value::None));
                 }
                 OpCode::Index => {
                     let b = self.stack.pop().expect("Stack underflow");
                     let a = self.stack.pop().expect("Stack underflow");
                     match (a, b) {
                         (Value::Table(t), v) => {
-                            self.stack.push(index(t, &v));
+                            self.stack.push(index_table(t, &v));
                         }
                         (Value::Array(a), Value::Integer(i)) => {
                             let a = a.borrow();
@@ -762,7 +681,7 @@ impl VM {
                             }
                         }
                         (a, _) => {
-                            self.throw(RuntimeError::TypeError {
+                            return Err(RuntimeError::TypeError {
                                 expected: ValueType::Table,
                                 found: ValueType::from(&a),
                                 thrower: Some("Index"),
@@ -790,14 +709,13 @@ impl VM {
                         (Value::Array(a), Value::Integer(i)) => {
                             let mut a = a.borrow_mut();
                             let Ok(i) = i.try_into() else {
-                                self.throw(RuntimeError::OverflowError {
+                                return Err(RuntimeError::OverflowError {
                                     required: "usize".to_owned(),
                                     found: "i64".to_owned(),
                                 });
-                                break;
                             };
                             if i > a.len() {
-                                self.throw(RuntimeError::IndexError {
+                                return Err(RuntimeError::IndexError {
                                     index: i,
                                     len: a.len(),
                                 });
@@ -808,7 +726,7 @@ impl VM {
                             }
                         }
                         (con, _) => {
-                            self.throw(RuntimeError::TypeError {
+                            return Err(RuntimeError::TypeError {
                                 expected: ValueType::Table,
                                 found: ValueType::from(&con),
                                 thrower: Some("Index"),
@@ -842,16 +760,121 @@ impl VM {
                 OpCode::NewTable => {
                     self.stack
                         .push(Value::Table(Rc::new(RefCell::new(Table::new()))));
+                }
+                OpCode::GetMeta => {
+                    let value = self.stack.pop().expect("stack underflow");
+                    match value {
+                        Value::Table(table) => {
+                            let table_ref = table.borrow();
+                            let meta_opt = table_ref.meta.as_ref();
+                            if let Some(meta) = meta_opt {
+                                self.stack.push(Value::Table(meta.clone()));
+                            } else {
+                                return Err(RuntimeError::TypeError {
+                                    expected: ValueType::Table,
+                                    found: ValueType::None,
+                                    thrower: Some("OpCode::GetMeta, super class metatable"),
+                                });
+                            }
+                        }
+                        other => {
+                            return Err(RuntimeError::TypeError {
+                                expected: ValueType::Table,
+                                found: ValueType::from(&other),
+                                thrower: Some("OpCode::GetMeta"),
+                            });
+                        }
+                    }
+                }
+                OpCode::SetMeta => {
+                    let meta = self.stack.pop().expect("stack underflow");
+                    let table = self.stack.pop().expect("stack underflow");
+                    match (table, meta) {
+                        (Value::Table(table), Value::Table(meta)) => {
+                            setMetatableOf(table, meta);
+                        }
+                        (table, meta) => {
+                            return Err(RuntimeError::TypeError {
+                                expected: ValueType::Two(
+                                    Box::new(ValueType::Table),
+                                    Box::new(ValueType::Table),
+                                ),
+                                found: ValueType::from((&table, &meta)),
+                                thrower: Some("OpCode::SetMeta"),
+                            });
+                        }
+                    }
+                }
+                OpCode::GetProto => {
+                    let value = self.stack.pop().expect("stack underflow");
+                    match value {
+                        Value::Table(table) => {
+                            let table_ref = table.borrow();
+                            let proto_opt = table_ref.prototype.as_ref();
+                            if let Some(proto) = proto_opt {
+                                self.stack.push(Value::Table(proto.clone()));
+                            } else {
+                                return Err(RuntimeError::TypeError {
+                                    expected: ValueType::Table,
+                                    found: ValueType::None,
+                                    thrower: Some("OpCode::GetProto, super class"),
+                                });
+                            }
+                        }
+                        other => {
+                            return Err(RuntimeError::TypeError {
+                                expected: ValueType::Table,
+                                found: ValueType::from(&other),
+                                thrower: Some("OpCode::GetProto"),
+                            });
+                        }
+                    }
+                }
+                OpCode::SetProto(preserves_table) => {
+                    let proto = self.stack.pop().expect("stack underflow");
+                    let table = self.stack.pop().expect("stack underflow");
+                    match (table, proto) {
+                        (Value::Table(table), Value::Table(meta)) => {
+                            if *preserves_table {
+                                self.stack.push(Value::Table(table.clone()));
+                            }
+                            setPrototypeOf(table, meta);
+                        }
+                        (table, proto) => {
+                            return Err(RuntimeError::TypeError {
+                                expected: ValueType::Two(
+                                    Box::new(ValueType::Table),
+                                    Box::new(ValueType::Table),
+                                ),
+                                found: ValueType::from((&table, &proto)),
+                                thrower: Some("OpCode::SetProto"),
+                            });
+                        }
+                    }
+                }
+                OpCode::Rot3 => {
+                    // Rotate the top three elements of the stack
+                    let a = self.stack.pop().expect("stack underflow");
+                    let b = self.stack.pop().expect("stack underflow");
+                    let c = self.stack.pop().expect("stack underflow");
+                    self.stack.push(a);
+                    self.stack.push(c);
+                    self.stack.push(b);
                 } //_ => panic!("{op:?}"),
             }
         }
-        if let Some(error) = &self.to_throw {
-            println!("RuntimeError:\n  {}", error);
-            self.to_throw = None;
-            return None;
-        }
         // Value::None
-        self.stack.pop()
+        Ok(self.stack.pop().unwrap_or(Value::None))
+    }
+    fn bin_op(
+        &mut self,
+        func: impl Fn(&Value, &Value, &mut VM) -> RuntimeResult<Value>,
+    ) -> RuntimeResult<()> {
+        let b = self.stack.pop().expect("stack underflow");
+        let a = self.stack.pop().expect("stack underflow");
+        let ret = func(&a, &b, self)?;
+        self.stack.push(ret);
+        Ok(())
     }
     pub fn replace_code(&mut self, code: Vec<OpCode>) {
         self.code = code;
@@ -879,7 +902,7 @@ impl VM {
         }
         self.locals.push(Rc::new(RefCell::new(new_env)));
         let tmp = std::mem::take(&mut self.stack);
-        let ret_val = self.run(Some(&func.code)).unwrap_or(Value::None);
+        let ret_val = self.run(Some(&func.code))?;
         self.locals.truncate(original_level);
         self.stack = tmp;
         Ok(ret_val)
