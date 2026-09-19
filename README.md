@@ -152,6 +152,50 @@ let obj = Class.new();
 println(obj + obj);            // 输出两个对象的数组
 ```
 
+### 类语法
+支持类，作为手动创建元表和原型的语法糖。
+```
+class Animal {
+    new(self, type) {
+        self.type = type;
+    }
+}
+
+class Dog: Animal {
+    new(self) {
+        supermeta.new(self, "dog");
+    }
+}
+let a = new Dog();
+```
+注意new在这里是关键字，new(self, type)是一个元方法而非原型中的普通方法，这个元方法规定 `new` 实例化的行为。`supermeta` 是一个关键字，代表原型的元表。
+
+声明普通实例方法，可以使用 `:<method_name>(<args>)`，这将省下 `self` 参数，等价于 `<method_name>(self, <args>)`。
+
+声明某些用于运算符重载的元方法，可以直接书写对应的运算符。例如：
+
+```
+class Foo {
+    // 等同于 @add(a, b)
+    +(a, b) {
+        return [a, b];
+    }
+}
+```
+
+其他的元方法，使用 `@<identifier>` 声明。如：
+
+```
+class Node {
+    @toString(self) {
+        return "<" .. self.name .. ">";
+    }
+}
+```
+
+这将重载 `toString(val)` 的行为。
+
+
 ## 内置函数
 
 ### 全局函数

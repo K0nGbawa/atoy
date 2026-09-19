@@ -76,6 +76,11 @@ pub enum Token {
     Return,
     While,
     Fn,
+    Class,
+    New,
+    Super,
+    SuperMeta,
+    AtMark
 }
 
 impl std::fmt::Display for Token {
@@ -114,6 +119,10 @@ impl std::fmt::Display for Token {
             Self::Return => write!(f, "return"),
             Self::While => write!(f, "while"),
             Self::Fn => write!(f, "fn"),
+            Self::Class => write!(f, "class"),
+            Self::New => write!(f, "new"),
+            Self::Super => write!(f, "super"),
+            Self::SuperMeta => write!(f, "supermeta"),
             Self::And => write!(f, "and"),
             Self::Or => write!(f, "or"),
             Self::Not => write!(f, "not"),
@@ -123,6 +132,7 @@ impl std::fmt::Display for Token {
             Self::LBracket => write!(f, "["),
             Self::RBracket => write!(f, "]"),
             Self::String(string) => write!(f, "{}", string.escape_debug()),
+            Self::AtMark => write!(f, "@")
         }
     }
 }
@@ -379,9 +389,14 @@ impl Lexer {
                     "and" => Ok(Token::And),
                     "or" => Ok(Token::Or),
                     "not" => Ok(Token::Not),
+                    "class" => Ok(Token::Class),
+                    "new" => Ok(Token::New),
+                    "super" => Ok(Token::Super),
+                    "supermeta" => Ok(Token::SuperMeta),
                     _ => Ok(Token::Ident(ident_name)),
                 }
             }
+            '@' => Ok(Token::AtMark),
             _ => {
                 return Err(LexError::UnexpectedChar {
                     ch,

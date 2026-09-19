@@ -1,0 +1,37 @@
+class Html {
+    new(self, name) {
+        self.name = name;
+        // self.props = {};
+        self.content = [];
+    }
+    :append(content) {
+        // println(type(content), self.content);
+        self.content:push(content);
+        return self;
+    }
+    :tag(name) {
+        // println(1);
+        let child = new Html(name);
+        child.parent = self;
+        self:append(child);
+        return child;
+    }
+    :done() {
+        return self.parent;
+    }
+    @toString(self) {
+        return "<" .. self.name .. ">" .. self.content:join("") .. "</" .. self.name .. ">";
+    }
+}
+
+
+
+let ele = new Html("div")
+    :tag("span")
+        :append("hello world")
+    :done()
+    :tag("p")
+        :append("hello world")
+    :done();
+
+println(toString(ele));

@@ -18,7 +18,7 @@ fn repl() -> anyhow::Result<()> {
     let mut vm = VM::new(opcodes);
     vm.register_func(
         "exit",
-        Rc::new(|_args| {
+        Rc::new(|_args, _| {
             std::process::exit(0);
         }),
     );
@@ -44,8 +44,10 @@ fn repl() -> anyhow::Result<()> {
                         // vm.peek_code();
                         let res = vm.run(None);
                         match res {
-                            None => {}
-                            Some(val) => println!("{}", repr(&val)),
+                            Err(e) => {
+                                println!("Runtime Error: {}", e);
+                            }
+                            Ok(val) => println!("{}", repr(&val)),
                         }
                         buffer.clear()
                     }
@@ -92,13 +94,12 @@ fn main() -> anyhow::Result<()> {
     let expr = parser.parse()?;
     let mut compiler = Compiler::new();
     let opcodes = compiler.compile(&expr);
-    println!("{:?}", opcodes);
+    println!("{:#?}", opcodes);
     let mut vm = VM::new(opcodes);
     let res = vm.run(None);
-    if let Some(val) = res {
-        println!("Program exited with result: {}", atoy::builtin::repr(&val));
-    } else {
-        println!("Program exited with no result");
+    match res {
+        Err(e) => println!("Runtime Error: {}", e),
+        Ok(val) => println!("Program exited with result: {}", atoy::builtin::repr(&val)),
     }
     anyhow::Ok(())
 }
